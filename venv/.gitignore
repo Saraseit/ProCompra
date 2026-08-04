@@ -1,0 +1,101 @@
+# ===== PYTHON / FASTAPI =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Entorno local
+.env
+.env.local
+.env.*.local
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# FastAPI
+.uvicorn/
+*.db
+*.sqlite
+instance/
+
+# ===== REACT / VITE =====
+node_modules/
+dist/
+build/
+.DS_Store
+*.pem
+
+# Vite
+.vite/
+
+# npm / yarn
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+package-lock.json
+yarn.lock
+
+# Logs
+logs/
+*.log
+
+# ===== SUPABASE / CONFIGURACIÓN =====
+# Las claves secretas NUNCA van a Git
+.supabase/
+supabase/migrations/
+supabase/.env.local
+
+# ===== SISTEMA OPERATIVO =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== IDE / EDITORES =====
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.vim/
+.emacs.d/
+
+# ===== OTROS =====
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# Archivos temporales
+*.tmp
+*.bak
+*.swp
+tmp/
+temp/
