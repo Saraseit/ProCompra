@@ -61,7 +61,7 @@ def registrar_evento(orden_id: str, evento: str, detalle: str = None, usuario_id
     }).execute()
 
 
-@router.get("/")
+@router.get("")
 def listar_ordenes(
     estado: Optional[str] = None,
     usuario = Depends(usuario_actual),
@@ -121,7 +121,7 @@ def obtener_orden(orden_id: str, usuario = Depends(usuario_actual)):
     return resultado
 
 
-@router.post("/", status_code=201)
+@router.post("", status_code=201)
 def crear_orden(
     orden: OrdenCreate,
     usuario = Depends(requiere_rol("admin", "compras")),

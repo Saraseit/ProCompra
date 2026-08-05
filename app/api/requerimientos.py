@@ -36,7 +36,7 @@ class RequerimientoUpdate(BaseModel):
     orden_id: Optional[str] = None
 
 
-@router.get("/")
+@router.get("")
 def listar_requerimientos(
     estado: Optional[str] = Query(None),
     usuario = Depends(usuario_actual),
@@ -79,7 +79,7 @@ def obtener_requerimiento(req_id: str, usuario = Depends(usuario_actual)):
     return res.data
 
 
-@router.post("/", status_code=201)
+@router.post("", status_code=201)
 def crear_requerimiento(
     req: RequerimientoCreate,
     usuario = Depends(usuario_actual),

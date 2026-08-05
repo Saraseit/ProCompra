@@ -26,7 +26,7 @@ class ProveedorUpdate(ProveedorBase):
     nombre: Optional[str] = None
 
 
-@router.get("/")
+@router.get("")
 def listar_proveedores(usuario = Depends(usuario_actual)):
     res = (
         supabase.table("proveedores")
@@ -52,7 +52,7 @@ def obtener_proveedor(proveedor_id: str, usuario = Depends(usuario_actual)):
     return res.data
 
 
-@router.post("/", status_code=201)
+@router.post("", status_code=201)
 def crear_proveedor(
     proveedor: ProveedorCreate,
     usuario = Depends(requiere_rol("admin", "compras"))

@@ -13,6 +13,7 @@ app = FastAPI(
     title="ProCompra API",
     description="Sistema de órdenes de compra — Minimal 4.0",
     version="1.0.0",
+    redirect_slashes=False,
 )
 
 # ── CORS ──────────────────────────────────────────────
