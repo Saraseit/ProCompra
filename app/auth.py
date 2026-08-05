@@ -17,15 +17,20 @@ def usuario_actual(
 ) -> dict:
     token = credentials.credentials
 
+    print(f"[AUTH] Token recibido, largo: {len(token)}, inicia con: {token[:20]}")
+
     try:
         res = supabase_auth.auth.get_user(token)
     except Exception as e:
+        print(f"[AUTH ERROR] {type(e).__name__}: {str(e)[:300]}")
         raise HTTPException(status_code=401, detail="Error verificando token")
 
     if not res or not res.user:
+        print("[AUTH] get_user devolvió vacío")
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
     user_id = res.user.id
+    print(f"[AUTH] OK — user_id: {user_id}")
 
     perfil = (
         supabase.table("usuarios")
