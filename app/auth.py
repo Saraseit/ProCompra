@@ -1,14 +1,16 @@
-"""
-app/auth.py
------------
-Valida el JWT de Supabase usando el cliente de Supabase directamente.
-"""
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client
+from app.config import settings
 from app.database import supabase
 
 bearer = HTTPBearer()
+
+# Cliente separado con anon key para verificar tokens de usuarios
+supabase_auth = create_client(
+    settings.SUPABASE_URL,
+    settings.SUPABASE_ANON_KEY,
+)
 
 
 def usuario_actual(
@@ -17,22 +19,19 @@ def usuario_actual(
     token = credentials.credentials
 
     try:
-        # Verificar el token directamente con Supabase Auth
-        res = supabase.auth.get_user(token)
+        res = supabase_auth.auth.get_user(token)
         if not res or not res.user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token inválido o expirado",
             )
         user_id = res.user.id
-
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token inválido: {str(e)}",
         )
 
-    # Buscar el perfil completo con rol en la tabla usuarios
     perfil = (
         supabase.table("usuarios")
         .select("id, nombre, correo, rol, activo")

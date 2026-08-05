@@ -11,9 +11,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     SUPABASE_URL: str
     SUPABASE_KEY: str
-    RESEND_API_KEY: str = ""   # opcional por ahora
-    JWT_SECRET: str = ""       # opcional por ahora
-    FRONTEND_URL: str = "http://localhost:5173"
+    SUPABASE_ANON_KEY: str        # <- agregar esta línea
+    RESEND_API_KEY: str = ""
+    JWT_SECRET: str = ""
+    FRONTEND_URL: str = "http://localhost:5174"
 
     class Config:
         env_file = ".env"
