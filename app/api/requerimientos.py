@@ -1,35 +1,26 @@
 """
 app/api/requerimientos.py
--------------------------
-Rutas para gestionar la lista de requerimientos.
-
-Endpoints:
-    GET    /api/requerimientos              — lista todos (filtrables por estado)
-    GET    /api/requerimientos/{id}         — detalle de uno
-    POST   /api/requerimientos              — crear nuevo
-    PUT    /api/requerimientos/{id}         — editar
-    DELETE /api/requerimientos/{id}         — soft delete (cancelar)
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import Optional
 from app.database import supabase
+from app.auth import usuario_actual, requiere_rol
 
 router = APIRouter(prefix="/requerimientos", tags=["Requerimientos"])
 
 
-# ── Esquemas ───────────────────────────────────────────
 class RequerimientoCreate(BaseModel):
     descripcion: str
     cantidad: float
     unidad: str
     precio_estimado: float = 0
     contrato: Optional[str] = None
-    proveedor_sug: Optional[str] = None   # UUID del proveedor
-    solicitante_id: str                   # UUID del usuario
+    proveedor_sug: Optional[str] = None
+    solicitante_id: str
     notas: Optional[str] = None
-    fecha_requerida: Optional[str] = None # formato YYYY-MM-DD
+    fecha_requerida: Optional[str] = None
 
 
 class RequerimientoUpdate(BaseModel):
@@ -45,16 +36,11 @@ class RequerimientoUpdate(BaseModel):
     orden_id: Optional[str] = None
 
 
-# ── Endpoints ─────────────────────────────────────────
 @router.get("/")
 def listar_requerimientos(
-    estado: Optional[str] = Query(None, description="pendiente | en_orden | cancelado"),
+    estado: Optional[str] = Query(None),
+    usuario = Depends(usuario_actual),
 ):
-    """
-    Lista todos los requerimientos.
-    Filtra por estado si se pasa como query param.
-    Ejemplo: GET /api/requerimientos?estado=pendiente
-    """
     query = (
         supabase.table("requerimientos")
         .select("""
@@ -64,17 +50,19 @@ def listar_requerimientos(
         """)
         .order("created_at", desc=True)
     )
-
     if estado:
         query = query.eq("estado", estado)
+
+    # Solicitantes solo ven sus propios requerimientos
+    if usuario["rol"] == "solicitante":
+        query = query.eq("solicitante_id", usuario["id"])
 
     res = query.execute()
     return res.data
 
 
 @router.get("/{req_id}")
-def obtener_requerimiento(req_id: str):
-    """Detalle de un requerimiento por su ID."""
+def obtener_requerimiento(req_id: str, usuario = Depends(usuario_actual)):
     res = (
         supabase.table("requerimientos")
         .select("""
@@ -92,11 +80,12 @@ def obtener_requerimiento(req_id: str):
 
 
 @router.post("/", status_code=201)
-def crear_requerimiento(req: RequerimientoCreate):
-    """Crea un nuevo requerimiento con estado 'pendiente'."""
+def crear_requerimiento(
+    req: RequerimientoCreate,
+    usuario = Depends(usuario_actual),
+):
     datos = req.model_dump()
     datos["estado"] = "pendiente"
-
     res = (
         supabase.table("requerimientos")
         .insert(datos)
@@ -106,13 +95,14 @@ def crear_requerimiento(req: RequerimientoCreate):
 
 
 @router.put("/{req_id}")
-def actualizar_requerimiento(req_id: str, req: RequerimientoUpdate):
-    """Actualiza campos de un requerimiento existente."""
+def actualizar_requerimiento(
+    req_id: str,
+    req: RequerimientoUpdate,
+    usuario = Depends(requiere_rol("admin", "compras")),
+):
     datos = {k: v for k, v in req.model_dump().items() if v is not None}
-
     if not datos:
         raise HTTPException(status_code=400, detail="No hay campos para actualizar")
-
     res = (
         supabase.table("requerimientos")
         .update(datos)
@@ -125,11 +115,10 @@ def actualizar_requerimiento(req_id: str, req: RequerimientoUpdate):
 
 
 @router.delete("/{req_id}", status_code=204)
-def cancelar_requerimiento(req_id: str):
-    """
-    Soft delete — cambia el estado a 'cancelado'.
-    No se borra físicamente para conservar el historial.
-    """
+def cancelar_requerimiento(
+    req_id: str,
+    usuario = Depends(usuario_actual),
+):
     res = (
         supabase.table("requerimientos")
         .update({"estado": "cancelado"})
