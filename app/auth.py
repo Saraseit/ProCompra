@@ -17,37 +17,25 @@ def usuario_actual(
 ) -> dict:
     token = credentials.credentials
 
-    # 1 — Verificar token con Supabase Auth
     try:
         res = supabase_auth.auth.get_user(token)
     except Exception as e:
-        print(f"[AUTH] Error al verificar token: {type(e).__name__}: {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Error verificando token: {str(e)}")
+        raise HTTPException(status_code=401, detail="Error verificando token")
 
     if not res or not res.user:
-        print(f"[AUTH] Token sin usuario")
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
     user_id = res.user.id
-    print(f"[AUTH] Token válido — user_id: {user_id}")
 
-    # 2 — Buscar perfil en tabla usuarios
-    try:
-        perfil = (
-            supabase.table("usuarios")
-            .select("id, nombre, correo, rol, activo")
-            .eq("id", user_id)
-            .single()
-            .execute()
-        )
-    except Exception as e:
-        print(f"[AUTH] Error al buscar perfil: {type(e).__name__}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error buscando perfil: {str(e)}")
-
-    print(f"[AUTH] Perfil encontrado: {perfil.data}")
+    perfil = (
+        supabase.table("usuarios")
+        .select("id, nombre, correo, rol, activo")
+        .eq("id", user_id)
+        .single()
+        .execute()
+    )
 
     if not perfil.data:
-        print(f"[AUTH] Usuario {user_id} no está en tabla usuarios")
         raise HTTPException(status_code=401, detail="Usuario no registrado en el sistema")
 
     if not perfil.data.get("activo"):
