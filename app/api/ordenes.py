@@ -22,7 +22,6 @@ class PartidaInput(BaseModel):
 
 class OrdenCreate(BaseModel):
     proveedor_id: str
-    creado_por: str
     tipo_pago: str = "transferencia"
     observaciones: Optional[str] = None
     partidas: list[PartidaInput]
@@ -39,7 +38,6 @@ class PagoCreate(BaseModel):
     metodo: str
     monto: float
     comprobante_url: Optional[str] = None
-    registrado_por: str
     notas: Optional[str] = None
 
 
@@ -96,10 +94,14 @@ def obtener_orden(orden_id: str, usuario = Depends(usuario_actual)):
             creador:creado_por ( id, nombre, correo )
         """)
         .eq("id", orden_id)
-        .single()
+        .maybe_single()
         .execute()
     )
     if not orden.data:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    # Solicitantes solo pueden ver sus propias órdenes
+    if usuario["rol"] == "solicitante" and orden.data.get("creado_por") != usuario["id"]:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     partidas     = supabase.table("partidas").select("*").eq("orden_id", orden_id).execute()
@@ -131,12 +133,14 @@ def crear_orden(
 
     orden_data = {
         "proveedor_id":  orden.proveedor_id,
-        "creado_por":    orden.creado_por,
+        "creado_por":    usuario["id"],
         "tipo_pago":     orden.tipo_pago,
         "observaciones": orden.observaciones,
         "estado":        "borrador",
     }
-    res_orden   = supabase.table("ordenes_compra").insert(orden_data).execute()
+    res_orden = supabase.table("ordenes_compra").insert(orden_data).execute()
+    if not res_orden.data:
+        raise HTTPException(status_code=400, detail="No se pudo crear la orden")
     nueva_orden = res_orden.data[0]
     orden_id    = nueva_orden["id"]
 
@@ -169,12 +173,11 @@ def crear_orden(
 def cambiar_estado(
     orden_id: str,
     body: EstadoUpdate,
-    usuario = Depends(usuario_actual),
+    usuario = Depends(requiere_rol("admin", "compras", "pagos")),
 ):
-    estados_validos = {
-        "borrador", "autorizacion", "autorizada",
-        "pagada", "recoleccion", "cerrada", "rechazada"
-    }
+    # 'pagada', 'recoleccion' y 'cerrada' solo se alcanzan a través de
+    # /pago y /recoleccion, que registran sus propios datos asociados.
+    estados_validos = {"borrador", "autorizacion", "autorizada", "rechazada"}
     if body.estado not in estados_validos:
         raise HTTPException(status_code=400, detail=f"Estado inválido: {body.estado}")
 
@@ -216,8 +219,11 @@ def registrar_pago(
 ):
     datos = pago.model_dump()
     datos["orden_id"] = orden_id
+    datos["registrado_por"] = usuario["id"]
 
     res = supabase.table("pagos").insert(datos).execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="No se pudo registrar el pago")
 
     supabase.table("ordenes_compra").update(
         {"estado": "pagada"}
@@ -244,12 +250,14 @@ def registrar_pago(
 def registrar_recoleccion(
     orden_id: str,
     rec: RecoleccionCreate,
-    usuario = Depends(usuario_actual),
+    usuario = Depends(requiere_rol("admin", "compras", "pagos")),
 ):
     datos = rec.model_dump()
     datos["orden_id"] = orden_id
 
     res = supabase.table("recolecciones").insert(datos).execute()
+    if not res.data:
+        raise HTTPException(status_code=400, detail="No se pudo registrar la recolección")
 
     nuevo_estado = "cerrada" if rec.completado else "recoleccion"
     supabase.table("ordenes_compra").update(

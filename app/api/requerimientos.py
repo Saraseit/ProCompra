@@ -18,7 +18,6 @@ class RequerimientoCreate(BaseModel):
     precio_estimado: float = 0
     contrato: Optional[str] = None
     proveedor_sug: Optional[str] = None
-    solicitante_id: str
     notas: Optional[str] = None
     fecha_requerida: Optional[str] = None
 
@@ -71,11 +70,16 @@ def obtener_requerimiento(req_id: str, usuario = Depends(usuario_actual)):
             solicitante:solicitante_id ( id, nombre )
         """)
         .eq("id", req_id)
-        .single()
+        .maybe_single()
         .execute()
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="Requerimiento no encontrado")
+
+    # Solicitantes solo pueden ver sus propios requerimientos
+    if usuario["rol"] == "solicitante" and res.data.get("solicitante_id") != usuario["id"]:
+        raise HTTPException(status_code=404, detail="Requerimiento no encontrado")
+
     return res.data
 
 
@@ -86,11 +90,14 @@ def crear_requerimiento(
 ):
     datos = req.model_dump()
     datos["estado"] = "pendiente"
+    datos["solicitante_id"] = usuario["id"]
     res = (
         supabase.table("requerimientos")
         .insert(datos)
         .execute()
     )
+    if not res.data:
+        raise HTTPException(status_code=400, detail="No se pudo crear el requerimiento")
     return res.data[0]
 
 
@@ -119,11 +126,14 @@ def cancelar_requerimiento(
     req_id: str,
     usuario = Depends(usuario_actual),
 ):
-    res = (
+    query = (
         supabase.table("requerimientos")
         .update({"estado": "cancelado"})
         .eq("id", req_id)
-        .execute()
     )
+    # Solicitantes solo pueden cancelar sus propios requerimientos
+    if usuario["rol"] == "solicitante":
+        query = query.eq("solicitante_id", usuario["id"])
+    res = query.execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Requerimiento no encontrado")

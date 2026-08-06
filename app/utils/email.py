@@ -12,6 +12,7 @@ PUNTO DE CONEXIÓN:
     solo reemplaza las funciones send_* manteniendo la misma firma.
 """
 
+import html
 import resend
 from app.config import settings
 
@@ -26,6 +27,11 @@ AUTORIZADORES = ["dahmc2312@gmail.com"]
 
 
 # ── Helpers ────────────────────────────────────────────
+def _esc(valor) -> str:
+    """Escapa valores controlados por el usuario antes de insertarlos en HTML."""
+    return html.escape(str(valor)) if valor is not None else ""
+
+
 def _formatear_dinero(monto: float) -> str:
     return f"${monto:,.2f} MXN"
 
@@ -37,8 +43,8 @@ def _html_partidas(partidas: list[dict]) -> str:
         importe = p.get("importe") or p.get("cantidad", 0) * p.get("precio_unitario", 0)
         filas += f"""
         <tr>
-            <td style="padding:8px;border-bottom:1px solid #eee">{p.get('cantidad')} {p.get('unidad')}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee">{p.get('concepto')}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee">{_esc(p.get('cantidad'))} {_esc(p.get('unidad'))}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee">{_esc(p.get('concepto'))}</td>
             <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">
                 {_formatear_dinero(p.get('precio_unitario', 0))}
             </td>
@@ -99,14 +105,14 @@ def enviar_correo_autorizacion(orden: dict) -> bool:
     Envía el correo de solicitud de autorización de pago
     a los autorizadores definidos en AUTORIZADORES.
     """
-    folio      = orden.get("folio")
-    proveedor  = orden.get("proveedor", {}).get("nombre", "—")
+    folio      = _esc(orden.get("folio"))
+    proveedor  = _esc(orden.get("proveedor", {}).get("nombre", "—"))
     total      = orden.get("total", 0)
-    tipo_pago  = orden.get("tipo_pago", "—").replace("_", " ").upper()
+    tipo_pago  = _esc(orden.get("tipo_pago", "—").replace("_", " ").upper())
     partidas   = orden.get("partidas", [])
-    cuenta     = orden.get("proveedor", {}).get("cuenta_bancaria") or "—"
-    rfc        = orden.get("proveedor", {}).get("rfc") or "—"
-    obs        = orden.get("observaciones") or "—"
+    cuenta     = _esc(orden.get("proveedor", {}).get("cuenta_bancaria") or "—")
+    rfc        = _esc(orden.get("proveedor", {}).get("rfc") or "—")
+    obs        = _esc(orden.get("observaciones") or "—")
 
     contenido = f"""
     <p style="color:#5A5648;margin:0 0 20px">
@@ -204,12 +210,12 @@ def enviar_correo_pago(orden: dict, pago: dict, destinatarios: list[str]) -> boo
     Notifica al solicitante y almacén que el pago fue realizado
     y que deben recolectar los insumos o programar la entrega.
     """
-    folio     = orden.get("folio")
+    folio     = _esc(orden.get("folio"))
     proveedor = orden.get("proveedor", {})
     partidas  = orden.get("partidas", [])
 
     lista_material = "".join(
-        f"<li style='padding:4px 0'>{p.get('cantidad')} {p.get('unidad')} — {p.get('concepto')}</li>"
+        f"<li style='padding:4px 0'>{_esc(p.get('cantidad'))} {_esc(p.get('unidad'))} — {_esc(p.get('concepto'))}</li>"
         for p in partidas
     )
 
@@ -223,23 +229,23 @@ def enviar_correo_pago(orden: dict, pago: dict, destinatarios: list[str]) -> boo
            style="background:#F9F7F2;border-radius:8px;padding:16px;margin-bottom:20px">
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px;width:140px">Proveedor</td>
-            <td style="padding:4px 0;font-weight:600">{proveedor.get('nombre','—')}</td>
+            <td style="padding:4px 0;font-weight:600">{_esc(proveedor.get('nombre','—'))}</td>
         </tr>
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px">Dirección</td>
-            <td style="padding:4px 0">{proveedor.get('direccion','—')}</td>
+            <td style="padding:4px 0">{_esc(proveedor.get('direccion','—'))}</td>
         </tr>
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px">Teléfono</td>
-            <td style="padding:4px 0">{proveedor.get('telefono','—')}</td>
+            <td style="padding:4px 0">{_esc(proveedor.get('telefono','—'))}</td>
         </tr>
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px">Fecha de pago</td>
-            <td style="padding:4px 0">{pago.get('fecha_pago','—')}</td>
+            <td style="padding:4px 0">{_esc(pago.get('fecha_pago','—'))}</td>
         </tr>
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px">Referencia</td>
-            <td style="padding:4px 0;font-weight:600">{pago.get('referencia','—')}</td>
+            <td style="padding:4px 0;font-weight:600">{_esc(pago.get('referencia','—'))}</td>
         </tr>
         <tr>
             <td style="padding:4px 0;color:#8A8577;font-size:13px">Monto pagado</td>

@@ -44,7 +44,7 @@ def obtener_proveedor(proveedor_id: str, usuario = Depends(usuario_actual)):
         supabase.table("proveedores")
         .select("*")
         .eq("id", proveedor_id)
-        .single()
+        .maybe_single()
         .execute()
     )
     if not res.data:
@@ -62,6 +62,8 @@ def crear_proveedor(
         .insert(proveedor.model_dump())
         .execute()
     )
+    if not res.data:
+        raise HTTPException(status_code=400, detail="No se pudo crear el proveedor")
     return res.data[0]
 
 

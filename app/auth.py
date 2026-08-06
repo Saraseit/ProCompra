@@ -7,20 +7,43 @@ from app.database import supabase
 
 bearer = HTTPBearer()
 
-_public_key_cache = None
+_jwks_cache = None
 
-def obtener_clave_publica():
-    global _public_key_cache
-    if _public_key_cache:
-        return _public_key_cache
-    url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
-    res = httpx.get(url, headers={"apikey": settings.SUPABASE_KEY})
-    res.raise_for_status()
-    jwks = res.json()
+def _obtener_jwks(forzar_refresh: bool = False) -> dict:
+    global _jwks_cache
+    if forzar_refresh or _jwks_cache is None:
+        url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+        res = httpx.get(url, headers={"apikey": settings.SUPABASE_KEY})
+        res.raise_for_status()
+        _jwks_cache = res.json()
+    return _jwks_cache
+
+
+def obtener_clave_publica(kid: str = None, forzar_refresh: bool = False):
     from jwt.algorithms import ECAlgorithm
-    clave = ECAlgorithm.from_jwk(jwks["keys"][0])
-    _public_key_cache = clave
-    return clave
+    jwks = _obtener_jwks(forzar_refresh)
+    claves = jwks.get("keys", [])
+    if not claves:
+        raise HTTPException(status_code=401, detail="No hay claves públicas disponibles")
+
+    jwk = next((k for k in claves if k.get("kid") == kid), None) if kid else None
+    if jwk is None:
+        jwk = claves[0]
+    return ECAlgorithm.from_jwk(jwk)
+
+
+def _decodificar(token: str, forzar_refresh: bool = False) -> dict:
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.InvalidTokenError:
+        kid = None
+    clave = obtener_clave_publica(kid, forzar_refresh=forzar_refresh)
+    return jwt.decode(
+        token,
+        clave,
+        algorithms=["ES256"],
+        options={"verify_aud": False},
+    )
 
 
 def usuario_actual(
@@ -29,30 +52,28 @@ def usuario_actual(
     token = credentials.credentials
 
     try:
-        clave = obtener_clave_publica()
-        payload = jwt.decode(
-            token,
-            clave,
-            algorithms=["ES256"],
-            options={"verify_aud": False},
-        )
+        try:
+            payload = _decodificar(token)
+        except jwt.InvalidSignatureError:
+            # La clave cacheada puede estar desactualizada si Supabase rotó las llaves de firma
+            payload = _decodificar(token, forzar_refresh=True)
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=401, detail="Token sin usuario")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError as e:
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=401, detail="Error verificando token")
 
     perfil = (
         supabase.table("usuarios")
         .select("id, nombre, correo, rol, activo")
         .eq("id", user_id)
-        .single()
+        .maybe_single()
         .execute()
     )
 
