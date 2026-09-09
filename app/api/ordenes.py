@@ -3,11 +3,13 @@ app/api/ordenes.py
 """
 
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from uuid import UUID
-from app.database import supabase
+from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
+from app.utils.pdf import generar_pdf_orden
 
 router = APIRouter(prefix="/ordenes", tags=["Órdenes de compra"])
 
@@ -167,17 +169,15 @@ def listar_ordenes(
 
 @router.get("/{orden_id}")
 def obtener_orden(orden_id: str, usuario=Depends(usuario_actual)):
-    orden = (
+    orden = una_fila(
         supabase.table("ordenes_compra")
         .select(SELECT_DETALLE)
         .eq("id", orden_id)
-        .maybe_single()
-        .execute()
     )
-    if not orden.data:
+    if not orden:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
-    if usuario["rol"] == "solicitante" and orden.data.get("creado_por") != usuario["id"]:
+    if usuario["rol"] == "solicitante" and orden.get("creado_por") != usuario["id"]:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     partidas      = supabase.table("partidas").select("*").eq("orden_id", orden_id).execute()
@@ -191,7 +191,7 @@ def obtener_orden(orden_id: str, usuario=Depends(usuario_actual)):
         .execute()
     )
 
-    resultado = orden.data
+    resultado = orden
     resultado["partidas"]      = partidas.data
     resultado["pagos"]         = pagos.data
     resultado["recolecciones"] = recolecciones.data
@@ -199,21 +199,32 @@ def obtener_orden(orden_id: str, usuario=Depends(usuario_actual)):
     return resultado
 
 
+@router.get("/{orden_id}/pdf")
+def descargar_pdf(orden_id: str, usuario=Depends(usuario_actual)):
+    """Devuelve la orden como PDF. Respeta la misma visibilidad que el detalle."""
+    orden = obtener_orden(orden_id, usuario)
+    buffer = generar_pdf_orden(orden)
+    nombre = f"orden-{orden.get('folio')}.pdf"
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
 @router.post("", status_code=201)
 def crear_orden(
     orden: OrdenCreate,
     usuario=Depends(requiere_rol("admin", "compras")),
 ):
-    proveedor = (
+    proveedor = una_fila(
         supabase.table("proveedores")
         .select("id, activo")
         .eq("id", orden.proveedor_id)
-        .maybe_single()
-        .execute()
     )
-    if not proveedor.data:
+    if not proveedor:
         raise HTTPException(status_code=400, detail="El proveedor no existe")
-    if not proveedor.data.get("activo"):
+    if not proveedor.get("activo"):
         raise HTTPException(status_code=400, detail="El proveedor está desactivado")
 
     orden_data = {
@@ -268,16 +279,14 @@ def actualizar_orden(
     usuario=Depends(requiere_rol("admin", "compras")),
 ):
     """Editar campos de una orden en borrador."""
-    orden = (
+    orden = una_fila(
         supabase.table("ordenes_compra")
         .select("estado, creado_por")
         .eq("id", orden_id)
-        .maybe_single()
-        .execute()
     )
-    if not orden.data:
+    if not orden:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
-    if orden.data["estado"] != "borrador":
+    if orden["estado"] != "borrador":
         raise HTTPException(status_code=400, detail="Solo se pueden editar órdenes en borrador")
 
     datos = {k: v for k, v in body.model_dump().items() if v is not None}
@@ -389,17 +398,15 @@ def eliminar_orden(
 
     Marca la orden como 'rechazada', estado que el listado general omite.
     """
-    actual = (
+    actual = una_fila(
         supabase.table("ordenes_compra")
         .select("estado")
         .eq("id", orden_id)
-        .maybe_single()
-        .execute()
     )
-    if not actual.data:
+    if not actual:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
-    estado = actual.data["estado"]
+    estado = actual["estado"]
     if estado == "rechazada":
         raise HTTPException(status_code=409, detail="La orden ya está eliminada o rechazada")
     if estado in ("pagada", "recoleccion", "cerrada"):

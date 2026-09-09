@@ -5,7 +5,7 @@ app/api/proveedores.py
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from app.database import supabase
+from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 
 router = APIRouter(prefix="/proveedores", tags=["Proveedores"])
@@ -40,16 +40,14 @@ def listar_proveedores(usuario = Depends(usuario_actual)):
 
 @router.get("/{proveedor_id}")
 def obtener_proveedor(proveedor_id: str, usuario = Depends(usuario_actual)):
-    res = (
+    proveedor = una_fila(
         supabase.table("proveedores")
         .select("*")
         .eq("id", proveedor_id)
-        .maybe_single()
-        .execute()
     )
-    if not res.data:
+    if not proveedor:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
-    return res.data
+    return proveedor
 
 
 @router.post("", status_code=201)

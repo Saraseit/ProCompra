@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from uuid import UUID
-from app.database import supabase
+from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 
 router = APIRouter(prefix="/requerimientos", tags=["Requerimientos"])
@@ -103,21 +103,19 @@ def listar_requerimientos(
 
 @router.get("/{req_id}")
 def obtener_requerimiento(req_id: str, usuario = Depends(usuario_actual)):
-    res = (
+    req = una_fila(
         supabase.table("requerimientos")
         .select(SELECT_REQ)
         .eq("id", req_id)
-        .maybe_single()
-        .execute()
     )
-    if not res.data:
+    if not req:
         raise HTTPException(status_code=404, detail="Requerimiento no encontrado")
 
     # Solicitantes solo pueden ver sus propios requerimientos
-    if usuario["rol"] == "solicitante" and res.data.get("solicitante_id") != usuario["id"]:
+    if usuario["rol"] == "solicitante" and req.get("solicitante_id") != usuario["id"]:
         raise HTTPException(status_code=404, detail="Requerimiento no encontrado")
 
-    return res.data
+    return req
 
 
 @router.post("", status_code=201)
