@@ -3,7 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 import httpx
 from app.config import settings
-from app.database import supabase
+from app.database import supabase, una_fila
 
 bearer = HTTPBearer()
 
@@ -69,21 +69,19 @@ def usuario_actual(
     except Exception:
         raise HTTPException(status_code=401, detail="Error verificando token")
 
-    perfil = (
+    perfil = una_fila(
         supabase.table("usuarios")
         .select("id, nombre, correo, rol, activo")
         .eq("id", user_id)
-        .maybe_single()
-        .execute()
     )
 
-    if not perfil.data:
+    if not perfil:
         raise HTTPException(status_code=401, detail="Usuario no registrado en el sistema")
 
-    if not perfil.data.get("activo"):
+    if not perfil.get("activo"):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    return perfil.data
+    return perfil
 
 
 def requiere_rol(*roles: str):
