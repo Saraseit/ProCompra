@@ -3,33 +3,96 @@ app/api/ordenes.py
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
+from uuid import UUID
 from app.database import supabase
 from app.auth import usuario_actual, requiere_rol
 
 router = APIRouter(prefix="/ordenes", tags=["Órdenes de compra"])
 
+# Valores del enum metodo_pago en Postgres. Agregar uno aquí exige antes un
+# ALTER TYPE metodo_pago ADD VALUE en la base, o el insert falla.
+METODOS_PAGO = ("transferencia", "tarjeta_credito", "efectivo")
+
+ESTADOS_ORDEN = (
+    "borrador", "autorizacion", "autorizada",
+    "pagada", "recoleccion", "cerrada", "rechazada",
+)
+
+# PostgREST rechaza los saltos de línea dentro de select: si la cadena es
+# multilínea las relaciones anidadas se pierden sin error. Van en una sola línea.
+SELECT_LISTADO = (
+    "*,proveedor:proveedor_id(id,nombre,correo,telefono),"
+    "creador:creado_por(id,nombre),partidas(concepto)"
+)
+SELECT_DETALLE = (
+    "*,proveedor:proveedor_id(*),creador:creado_por(id,nombre,correo)"
+)
+
+
+def _texto_requerido(valor: str) -> str:
+    limpio = (valor or "").strip()
+    if not limpio:
+        raise ValueError("no puede quedar vacío")
+    return limpio
+
+
+def _uuid_valido(valor: str) -> str:
+    try:
+        return str(UUID(str(valor)))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("no es un identificador válido")
+
 
 class PartidaInput(BaseModel):
     req_id: Optional[str] = None
     concepto: str
-    cantidad: float
+    cantidad: float = Field(gt=0)
     unidad: str
-    precio_unitario: float
+    precio_unitario: float = Field(ge=0)
     contrato: Optional[str] = None
+
+    @field_validator("concepto", "unidad")
+    @classmethod
+    def _no_vacio(cls, v: str) -> str:
+        return _texto_requerido(v)
+
+    @field_validator("req_id")
+    @classmethod
+    def _req_id_valido(cls, v: Optional[str]) -> Optional[str]:
+        return _uuid_valido(v) if v else None
 
 
 class OrdenCreate(BaseModel):
     proveedor_id: str
     tipo_pago: str = "transferencia"
     observaciones: Optional[str] = None
-    partidas: list[PartidaInput]
+    partidas: list[PartidaInput] = Field(min_length=1)
+
+    @field_validator("proveedor_id")
+    @classmethod
+    def _proveedor_valido(cls, v: str) -> str:
+        return _uuid_valido(v)
+
+    @field_validator("tipo_pago")
+    @classmethod
+    def _tipo_pago_valido(cls, v: str) -> str:
+        if v not in METODOS_PAGO:
+            raise ValueError(f"debe ser uno de: {', '.join(METODOS_PAGO)}")
+        return v
 
 
 class OrdenUpdate(BaseModel):
     tipo_pago: Optional[str] = None
     observaciones: Optional[str] = None
+
+    @field_validator("tipo_pago")
+    @classmethod
+    def _tipo_pago_valido(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in METODOS_PAGO:
+            raise ValueError(f"debe ser uno de: {', '.join(METODOS_PAGO)}")
+        return v
 
 
 class EstadoUpdate(BaseModel):
@@ -41,9 +104,21 @@ class PagoCreate(BaseModel):
     fecha_pago: str
     referencia: str
     metodo: str
-    monto: float
+    monto: float = Field(gt=0)
     comprobante_url: Optional[str] = None
     notas: Optional[str] = None
+
+    @field_validator("referencia")
+    @classmethod
+    def _referencia_no_vacia(cls, v: str) -> str:
+        return _texto_requerido(v)
+
+    @field_validator("metodo")
+    @classmethod
+    def _metodo_valido(cls, v: str) -> str:
+        if v not in METODOS_PAGO:
+            raise ValueError(f"debe ser uno de: {', '.join(METODOS_PAGO)}")
+        return v
 
 
 class RecoleccionCreate(BaseModel):
@@ -71,15 +146,17 @@ def listar_ordenes(
 ):
     query = (
         supabase.table("ordenes_compra")
-        .select("""
-            *,
-            proveedor:proveedor_id ( id, nombre, correo, telefono ),
-            creador:creado_por ( id, nombre )
-        """)
+        .select(SELECT_LISTADO)
         .order("created_at", desc=True)
     )
     if estado:
+        if estado not in ESTADOS_ORDEN:
+            raise HTTPException(status_code=400, detail=f"Estado inválido: {estado}")
         query = query.eq("estado", estado)
+    else:
+        # El borrado lógico marca la orden como 'rechazada', así que el listado
+        # general la omite. Sigue accesible pidiendo ?estado=rechazada.
+        query = query.neq("estado", "rechazada")
 
     if usuario["rol"] == "solicitante":
         query = query.eq("creado_por", usuario["id"])
@@ -92,11 +169,7 @@ def listar_ordenes(
 def obtener_orden(orden_id: str, usuario=Depends(usuario_actual)):
     orden = (
         supabase.table("ordenes_compra")
-        .select("""
-            *,
-            proveedor:proveedor_id ( * ),
-            creador:creado_por ( id, nombre, correo )
-        """)
+        .select(SELECT_DETALLE)
         .eq("id", orden_id)
         .maybe_single()
         .execute()
@@ -131,8 +204,17 @@ def crear_orden(
     orden: OrdenCreate,
     usuario=Depends(requiere_rol("admin", "compras")),
 ):
-    if not orden.partidas:
-        raise HTTPException(status_code=400, detail="La orden debe tener al menos una partida")
+    proveedor = (
+        supabase.table("proveedores")
+        .select("id, activo")
+        .eq("id", orden.proveedor_id)
+        .maybe_single()
+        .execute()
+    )
+    if not proveedor.data:
+        raise HTTPException(status_code=400, detail="El proveedor no existe")
+    if not proveedor.data.get("activo"):
+        raise HTTPException(status_code=400, detail="El proveedor está desactivado")
 
     orden_data = {
         "proveedor_id":  orden.proveedor_id,
@@ -159,7 +241,14 @@ def crear_orden(
         }
         for p in orden.partidas
     ]
-    supabase.table("partidas").insert(partidas_data).execute()
+    try:
+        res_partidas = supabase.table("partidas").insert(partidas_data).execute()
+        if not res_partidas.data:
+            raise ValueError("insert de partidas sin resultado")
+    except Exception:
+        # Sin partidas la orden queda en blanco y con folio consumido: se descarta.
+        supabase.table("ordenes_compra").delete().eq("id", orden_id).execute()
+        raise HTTPException(status_code=400, detail="No se pudieron crear las partidas de la orden")
 
     req_ids = [p.req_id for p in orden.partidas if p.req_id]
     if req_ids:
@@ -296,15 +385,32 @@ def eliminar_orden(
     orden_id: str,
     usuario=Depends(requiere_rol("admin")),
 ):
-    """Soft delete — solo admin puede eliminar órdenes."""
-    res = (
+    """Soft delete — solo admin puede eliminar órdenes.
+
+    Marca la orden como 'rechazada', estado que el listado general omite.
+    """
+    actual = (
         supabase.table("ordenes_compra")
-        .update({"estado": "rechazada"})
+        .select("estado")
         .eq("id", orden_id)
+        .maybe_single()
         .execute()
     )
-    if not res.data:
+    if not actual.data:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    estado = actual.data["estado"]
+    if estado == "rechazada":
+        raise HTTPException(status_code=409, detail="La orden ya está eliminada o rechazada")
+    if estado in ("pagada", "recoleccion", "cerrada"):
+        raise HTTPException(
+            status_code=409,
+            detail="No se puede eliminar una orden que ya fue pagada",
+        )
+
+    supabase.table("ordenes_compra").update(
+        {"estado": "rechazada"}
+    ).eq("id", orden_id).execute()
 
     registrar_evento(
         orden_id,
