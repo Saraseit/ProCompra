@@ -2,6 +2,8 @@
 app/api/requerimientos.py
 """
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
@@ -25,6 +27,15 @@ def _texto_requerido(valor: str) -> str:
     if not limpio:
         raise ValueError("no puede quedar vacío")
     return limpio
+
+
+def _fecha_valida(valor: Optional[str]) -> Optional[str]:
+    if not valor:
+        return None
+    try:
+        return date.fromisoformat(str(valor)[:10]).isoformat()
+    except ValueError:
+        raise ValueError("debe ser una fecha AAAA-MM-DD")
 
 
 def _uuid_valido(valor: str) -> str:
@@ -54,6 +65,11 @@ class RequerimientoCreate(BaseModel):
     def _proveedor_valido(cls, v: Optional[str]) -> Optional[str]:
         return _uuid_valido(v) if v else None
 
+    @field_validator("fecha_requerida")
+    @classmethod
+    def _fecha(cls, v: Optional[str]) -> Optional[str]:
+        return _fecha_valida(v)
+
 
 class RequerimientoUpdate(BaseModel):
     descripcion: Optional[str] = None
@@ -71,6 +87,11 @@ class RequerimientoUpdate(BaseModel):
     @classmethod
     def _no_vacio(cls, v: Optional[str]) -> Optional[str]:
         return _texto_requerido(v) if v is not None else None
+
+    @field_validator("fecha_requerida")
+    @classmethod
+    def _fecha(cls, v: Optional[str]) -> Optional[str]:
+        return _fecha_valida(v)
 
     @field_validator("estado")
     @classmethod
@@ -143,6 +164,9 @@ def actualizar_requerimiento(
     usuario = Depends(requiere_rol("admin", "compras", "almacen")),
 ):
     datos = {k: v for k, v in req.model_dump().items() if v is not None}
+    # La fecha requerida sí se puede quitar: un null explícito la borra.
+    if "fecha_requerida" in req.model_fields_set:
+        datos["fecha_requerida"] = req.fecha_requerida
     if not datos:
         raise HTTPException(status_code=400, detail="No hay campos para actualizar")
     res = (

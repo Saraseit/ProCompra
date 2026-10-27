@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from app.auth import usuario_actual, requiere_rol
 from app.database import supabase
+from app.utils import credito
 
 router = APIRouter(prefix="/reportes", tags=["Reportes"])
 
@@ -22,6 +23,14 @@ ESTADOS_GASTO = ("pagada", "recoleccion", "comprobacion", "cerrada")
 ROLES_FINANZAS = ("admin", "compras", "pagos")
 
 SELECT_GASTO = "*,proveedor:proveedor_id(id,nombre,rfc)"
+
+# Una sola línea: PostgREST pierde los embebidos si la cadena es multilínea.
+# El proveedor va con * para que dias_credito llegue sin listarlo aquí.
+SELECT_CREDITO = (
+    "id,folio,fecha,estado,total,monto_comprobado,proveedor_id,proveedor:proveedor_id(*),"
+    "pagos(fecha_pago,monto,metodo,referencia),recolecciones(completado,fecha_real),"
+    "facturas(serie,folio,fecha_emision)"
+)
 
 ETIQUETAS_PAGO = {
     "transferencia":   "Transferencia",
@@ -88,7 +97,27 @@ def dashboard(usuario=Depends(usuario_actual)):
             supabase.table("facturas").select("id", count="exact")
             .is_("orden_id", "null").execute()
         ).count or 0
+        cuentas = _estados_de_cuenta()["totales"]
+        resumen["credito_vencido"] = cuentas["vencido"]
+        resumen["credito_ordenes_vencidas"] = cuentas["ordenes_vencidas"]
     return resumen
+
+
+def _estados_de_cuenta() -> dict:
+    ordenes = (
+        supabase.table("ordenes_compra")
+        .select(SELECT_CREDITO)
+        .eq("tipo_pago", "credito")
+        .in_("estado", list(credito.ESTADOS_DEUDA))
+        .execute()
+    ).data or []
+    return credito.estados_de_cuenta(ordenes, date.today())
+
+
+@router.get("/credito")
+def estados_de_cuenta_credito(usuario=Depends(requiere_rol(*ROLES_FINANZAS))):
+    """Saldo y vencimientos por proveedor de las compras a crédito."""
+    return _estados_de_cuenta()
 
 
 def _consultar_gastos(

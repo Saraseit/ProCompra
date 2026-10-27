@@ -32,6 +32,7 @@ def _partida(**cambios):
     ("ordenes.SELECT_ADJUNTO",      ordenes.SELECT_ADJUNTO),
     ("facturas.SELECT_FACTURA",     facturas.SELECT_FACTURA),
     ("facturas.SELECT_ORDEN_VINCULABLE", facturas.SELECT_ORDEN_VINCULABLE),
+    ("reportes.SELECT_CREDITO",     reportes.SELECT_CREDITO),
 ])
 def test_select_sin_saltos_de_linea(nombre, cadena):
     assert "\n" not in cadena, f"{nombre} tiene salto de línea: perdería los embeds"

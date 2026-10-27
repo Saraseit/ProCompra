@@ -3,7 +3,7 @@ app/api/proveedores.py
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
@@ -47,6 +47,8 @@ class ProveedorBase(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     cuenta_bancaria: Optional[str] = None
+    # Plazo de crédito que da el proveedor. Vacío = no da crédito o no se ha pactado.
+    dias_credito: Optional[int] = Field(default=None, ge=0, le=365)
 
     @field_validator("nombre")
     @classmethod
@@ -105,7 +107,7 @@ def crear_proveedor(
     _rechazar_si_duplicado(proveedor.nombre)
     res = (
         supabase.table("proveedores")
-        .insert(proveedor.model_dump())
+        .insert(proveedor.model_dump(exclude_none=True))
         .execute()
     )
     if not res.data:
@@ -120,6 +122,9 @@ def actualizar_proveedor(
     usuario = Depends(requiere_rol("admin", "compras", "almacen"))
 ):
     datos = {k: v for k, v in proveedor.model_dump().items() if v is not None}
+    # dias_credito sí se puede borrar: un null explícito quita el plazo.
+    if "dias_credito" in proveedor.model_fields_set:
+        datos["dias_credito"] = proveedor.dias_credito
     if not datos:
         raise HTTPException(status_code=400, detail="No hay campos para actualizar")
     if "nombre" in datos:
