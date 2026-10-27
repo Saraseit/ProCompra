@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
+from app.roles import ROLES_ADMIN, ROLES_OPERACION
 
 router = APIRouter(prefix="/proveedores", tags=["Proveedores"])
 
@@ -102,7 +103,7 @@ def obtener_proveedor(proveedor_id: str, usuario = Depends(usuario_actual)):
 @router.post("", status_code=201)
 def crear_proveedor(
     proveedor: ProveedorCreate,
-    usuario = Depends(requiere_rol("admin", "compras", "almacen"))
+    usuario = Depends(requiere_rol(*ROLES_OPERACION))
 ):
     _rechazar_si_duplicado(proveedor.nombre)
     res = (
@@ -119,7 +120,7 @@ def crear_proveedor(
 def actualizar_proveedor(
     proveedor_id: str,
     proveedor: ProveedorUpdate,
-    usuario = Depends(requiere_rol("admin", "compras", "almacen"))
+    usuario = Depends(requiere_rol(*ROLES_OPERACION))
 ):
     datos = {k: v for k, v in proveedor.model_dump().items() if v is not None}
     # dias_credito sí se puede borrar: un null explícito quita el plazo.
@@ -143,7 +144,7 @@ def actualizar_proveedor(
 @router.delete("/{proveedor_id}", status_code=204)
 def desactivar_proveedor(
     proveedor_id: str,
-    usuario = Depends(requiere_rol("admin"))
+    usuario = Depends(requiere_rol(*ROLES_ADMIN))
 ):
     res = (
         supabase.table("proveedores")

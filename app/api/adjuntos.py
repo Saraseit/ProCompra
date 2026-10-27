@@ -10,6 +10,7 @@ se lee como CFDI y queda registrado en facturas, vinculado a esa orden.
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.auth import usuario_actual
+from app.roles import ROLES_ADMIN
 from app.database import supabase, una_fila
 from app.api.ordenes import registrar_evento
 from app.api.facturas import registrar_xml
@@ -88,8 +89,8 @@ def borrar_adjunto(adjunto_id: str, usuario=Depends(usuario_actual)):
     )
     if not adjunto:
         raise HTTPException(status_code=404, detail="Documento no encontrado")
-    if usuario["rol"] != "admin" and adjunto["subido_por"] != usuario["id"]:
-        raise HTTPException(status_code=403, detail="Solo quien lo subió o un admin puede quitarlo")
+    if usuario["rol"] not in ROLES_ADMIN and adjunto["subido_por"] != usuario["id"]:
+        raise HTTPException(status_code=403, detail="Solo quien lo subió, admin o contabilidad pueden quitarlo")
     if (adjunto.get("orden") or {}).get("estado") == "cerrada":
         raise HTTPException(status_code=409, detail="La orden está cerrada: sus documentos ya no se quitan")
 

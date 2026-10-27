@@ -223,3 +223,20 @@ def test_etiquetas_del_pdf_cubren_pagos_y_estados():
     from app.utils import pdf
     assert set(pdf.ETIQUETAS_PAGO) == set(ordenes.METODOS_PAGO)
     assert set(pdf.ETIQUETAS_ESTADO) == set(ordenes.ESTADOS_ORDEN)
+
+
+# ── Contabilidad = admin salvo usuarios ───────────────────
+
+def test_contabilidad_tiene_los_permisos_de_admin():
+    from app import roles
+    for nombre in ("ROLES_ADMIN", "ROLES_OPERACION", "ROLES_CONTABILIDAD", "ROLES_TODOS"):
+        grupo = getattr(roles, nombre)
+        assert "admin" in grupo and "pagos" in grupo, nombre
+
+
+def test_usuarios_sigue_siendo_solo_de_admin():
+    from app.api import usuarios
+    for ruta in usuarios.router.routes:
+        dependencias = [d.call for d in ruta.dependant.dependencies]
+        cierres = [c.cell_contents for d in dependencias for c in (d.__closure__ or ())]
+        assert ("admin",) in cierres, f"{ruta.path} debería exigir solo admin"

@@ -11,6 +11,7 @@ from typing import Optional
 from uuid import UUID
 from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
+from app.roles import ROLES_ADMIN, ROLES_OPERACION, ROLES_CONTABILIDAD, ROLES_TODOS
 from app.utils.pdf import generar_pdf_orden
 from app.utils import notificaciones
 
@@ -27,11 +28,6 @@ ESTADOS_ORDEN = (
     "borrador", "autorizacion", "autorizada",
     "pagada", "recoleccion", "comprobacion", "cerrada", "rechazada",
 )
-
-# Quién opera las compras y quién maneja el dinero. Almacén y compras conviven.
-ROLES_OPERACION = ("admin", "compras", "almacen")
-ROLES_CONTABILIDAD = ("admin", "pagos")
-ROLES_TODOS = ("admin", "compras", "almacen", "pagos")
 
 # Cambios permitidos por PATCH /estado: destino -> (orígenes, roles, motivo obligatorio).
 # 'borrador' desde 'autorizacion' es la devolución para corrección; 'rechazada'
@@ -622,7 +618,7 @@ def cerrar_orden(
 @router.delete("/{orden_id}", status_code=204)
 def eliminar_orden(
     orden_id: str,
-    usuario=Depends(requiere_rol("admin")),
+    usuario=Depends(requiere_rol(*ROLES_ADMIN)),
 ):
     """Soft delete — solo admin puede eliminar órdenes.
 

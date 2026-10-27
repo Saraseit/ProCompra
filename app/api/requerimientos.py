@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import UUID
 from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
+from app.roles import ROLES_OPERACION
 
 router = APIRouter(prefix="/requerimientos", tags=["Requerimientos"])
 
@@ -161,7 +162,7 @@ def crear_requerimiento(
 def actualizar_requerimiento(
     req_id: str,
     req: RequerimientoUpdate,
-    usuario = Depends(requiere_rol("admin", "compras", "almacen")),
+    usuario = Depends(requiere_rol(*ROLES_OPERACION)),
 ):
     datos = {k: v for k, v in req.model_dump().items() if v is not None}
     # La fecha requerida sí se puede quitar: un null explícito la borra.
