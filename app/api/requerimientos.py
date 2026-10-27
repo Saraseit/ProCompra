@@ -140,7 +140,7 @@ def crear_requerimiento(
 def actualizar_requerimiento(
     req_id: str,
     req: RequerimientoUpdate,
-    usuario = Depends(requiere_rol("admin", "compras")),
+    usuario = Depends(requiere_rol("admin", "compras", "almacen")),
 ):
     datos = {k: v for k, v in req.model_dump().items() if v is not None}
     if not datos:

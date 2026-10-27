@@ -100,7 +100,7 @@ def obtener_proveedor(proveedor_id: str, usuario = Depends(usuario_actual)):
 @router.post("", status_code=201)
 def crear_proveedor(
     proveedor: ProveedorCreate,
-    usuario = Depends(requiere_rol("admin", "compras"))
+    usuario = Depends(requiere_rol("admin", "compras", "almacen"))
 ):
     _rechazar_si_duplicado(proveedor.nombre)
     res = (
@@ -117,7 +117,7 @@ def crear_proveedor(
 def actualizar_proveedor(
     proveedor_id: str,
     proveedor: ProveedorUpdate,
-    usuario = Depends(requiere_rol("admin", "compras"))
+    usuario = Depends(requiere_rol("admin", "compras", "almacen"))
 ):
     datos = {k: v for k, v in proveedor.model_dump().items() if v is not None}
     if not datos:

@@ -5,7 +5,8 @@ Envío de correos usando Resend.
 https://resend.com — gratis hasta 3,000 correos/mes
 
 Uso:
-    from app.utils.email import enviar_correo_autorizacion, enviar_correo_pago
+    from app.utils.email import enviar
+    (los avisos del flujo de órdenes están en app/utils/notificaciones.py)
 
 PUNTO DE CONEXIÓN:
     Para cambiar el proveedor de correo (SendGrid, SES, etc.)
@@ -18,12 +19,11 @@ from app.config import settings
 
 resend.api_key = settings.RESEND_API_KEY
 
-# Correo desde el que se envían los mensajes
-# En Resend debes verificar este dominio primero
-REMITENTE = "ProCompra <onboarding@resend.dev>"
-
-# Destinatarios fijos que autorizan pagos
-AUTORIZADORES = ["dahmc2312@gmail.com"]
+# Correo desde el que se envían los mensajes. El remitente de pruebas de
+# Resend (onboarding@resend.dev) solo entrega al dueño de la cuenta: para
+# avisar al equipo hay que verificar un dominio en Resend y fijar
+# EMAIL_REMITENTE, p. ej. "ProCompra <compras@minimalcuatrocero.com>".
+REMITENTE = settings.EMAIL_REMITENTE
 
 
 # ── Helpers ────────────────────────────────────────────
@@ -99,181 +99,24 @@ def _plantilla_base(titulo: str, contenido: str) -> str:
     """
 
 
-# ── Correos ────────────────────────────────────────────
-def enviar_correo_autorizacion(orden: dict) -> bool:
+# ── Envío ──────────────────────────────────────────────
+def enviar(destinatarios: list[str], asunto: str, titulo: str, contenido: str) -> bool:
+    """Envía un correo con la plantilla de ProCompra.
+
+    Nunca lanza: un correo que falla no debe tumbar la operación que lo
+    originó. Sin RESEND_API_KEY configurada simplemente no envía.
     """
-    Envía el correo de solicitud de autorización de pago
-    a los autorizadores definidos en AUTORIZADORES.
-    """
-    folio      = _esc(orden.get("folio"))
-    proveedor  = _esc(orden.get("proveedor", {}).get("nombre", "—"))
-    total      = orden.get("total", 0)
-    tipo_pago  = _esc(orden.get("tipo_pago", "—").replace("_", " ").upper())
-    partidas   = orden.get("partidas", [])
-    cuenta     = _esc(orden.get("proveedor", {}).get("cuenta_bancaria") or "—")
-    rfc        = _esc(orden.get("proveedor", {}).get("rfc") or "—")
-    obs        = _esc(orden.get("observaciones") or "—")
-
-    contenido = f"""
-    <p style="color:#5A5648;margin:0 0 20px">
-        Se solicita autorización para el siguiente pago a proveedor.
-    </p>
-
-    <table width="100%" cellpadding="0" cellspacing="0"
-           style="background:#F9F7F2;border-radius:8px;padding:16px;margin-bottom:20px">
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px;width:140px">Orden</td>
-            <td style="padding:4px 0;font-weight:700;font-size:15px">#{folio}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Proveedor</td>
-            <td style="padding:4px 0;font-weight:600">{proveedor}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">RFC</td>
-            <td style="padding:4px 0">{rfc}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Cuenta bancaria</td>
-            <td style="padding:4px 0">{cuenta}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Tipo de pago</td>
-            <td style="padding:4px 0">{tipo_pago}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Observaciones</td>
-            <td style="padding:4px 0">{obs}</td>
-        </tr>
-    </table>
-
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px">
-        <thead>
-            <tr style="background:#F4F1EA">
-                <th style="padding:10px 8px;text-align:left;font-size:12px;color:#6B6659">CANT / UNIDAD</th>
-                <th style="padding:10px 8px;text-align:left;font-size:12px;color:#6B6659">CONCEPTO</th>
-                <th style="padding:10px 8px;text-align:right;font-size:12px;color:#6B6659">P. UNIT</th>
-                <th style="padding:10px 8px;text-align:right;font-size:12px;color:#6B6659">IMPORTE</th>
-            </tr>
-        </thead>
-        <tbody>{_html_partidas(partidas)}</tbody>
-        <tfoot>
-            <tr>
-                <td colspan="3" style="padding:10px 8px;text-align:right;color:#6B6659;font-size:13px">
-                    Subtotal
-                </td>
-                <td style="padding:10px 8px;text-align:right">
-                    {_formatear_dinero(orden.get('subtotal', 0))}
-                </td>
-            </tr>
-            <tr>
-                <td colspan="3" style="padding:4px 8px;text-align:right;color:#6B6659;font-size:13px">
-                    IVA 16%
-                </td>
-                <td style="padding:4px 8px;text-align:right">
-                    {_formatear_dinero(orden.get('iva', 0))}
-                </td>
-            </tr>
-            <tr style="border-top:2px solid #26241D">
-                <td colspan="3"
-                    style="padding:12px 8px;text-align:right;font-weight:700;font-size:15px">
-                    TOTAL A PAGAR
-                </td>
-                <td style="padding:12px 8px;text-align:right;font-weight:700;font-size:15px;color:#C4462B">
-                    {_formatear_dinero(total)}
-                </td>
-            </tr>
-        </tfoot>
-    </table>
-
-    <p style="color:#5A5648;font-size:13px">
-        Para autorizar ingresa al sistema y cambia el estado de la orden a
-        <strong>Autorizada</strong>, o responde este correo con tu confirmación.
-    </p>
-    """
-
-    try:
-        resend.Emails.send({
-            "from": REMITENTE,
-            "to": AUTORIZADORES,
-            "subject": f"Autorización de pago — OC #{folio} · {proveedor}",
-            "html": _plantilla_base(f"Solicitud de autorización — OC #{folio}", contenido),
-        })
-        return True
-    except Exception as e:
-        print(f"[EMAIL ERROR] autorizacion OC #{folio}: {e}")
+    destinatarios = sorted({d for d in destinatarios if d})
+    if not settings.RESEND_API_KEY or not destinatarios:
         return False
-
-
-def enviar_correo_pago(orden: dict, pago: dict, destinatarios: list[str]) -> bool:
-    """
-    Notifica al solicitante y almacén que el pago fue realizado
-    y que deben recolectar los insumos o programar la entrega.
-    """
-    folio     = _esc(orden.get("folio"))
-    proveedor = orden.get("proveedor", {})
-    partidas  = orden.get("partidas", [])
-
-    lista_material = "".join(
-        f"<li style='padding:4px 0'>{_esc(p.get('cantidad'))} {_esc(p.get('unidad'))} — {_esc(p.get('concepto'))}</li>"
-        for p in partidas
-    )
-
-    contenido = f"""
-    <p style="color:#5A5648;margin:0 0 20px">
-        Se realizó el pago de la orden <strong>#{folio}</strong>.
-        Favor de recolectar los insumos o programar la entrega con el proveedor.
-    </p>
-
-    <table width="100%" cellpadding="0" cellspacing="0"
-           style="background:#F9F7F2;border-radius:8px;padding:16px;margin-bottom:20px">
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px;width:140px">Proveedor</td>
-            <td style="padding:4px 0;font-weight:600">{_esc(proveedor.get('nombre','—'))}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Dirección</td>
-            <td style="padding:4px 0">{_esc(proveedor.get('direccion','—'))}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Teléfono</td>
-            <td style="padding:4px 0">{_esc(proveedor.get('telefono','—'))}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Fecha de pago</td>
-            <td style="padding:4px 0">{_esc(pago.get('fecha_pago','—'))}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Referencia</td>
-            <td style="padding:4px 0;font-weight:600">{_esc(pago.get('referencia','—'))}</td>
-        </tr>
-        <tr>
-            <td style="padding:4px 0;color:#8A8577;font-size:13px">Monto pagado</td>
-            <td style="padding:4px 0;font-weight:700;color:#2E6B4F">
-                {_formatear_dinero(pago.get('monto', 0))}
-            </td>
-        </tr>
-    </table>
-
-    <p style="color:#26241D;font-weight:600;margin:0 0 8px">Material a recibir:</p>
-    <ul style="margin:0 0 20px;padding-left:20px;color:#5A5648;font-size:14px">
-        {lista_material}
-    </ul>
-
-    <p style="color:#5A5648;font-size:13px">
-        Registra en el sistema la fecha de recolección o entrega
-        y el nombre del responsable.
-    </p>
-    """
-
     try:
         resend.Emails.send({
             "from": REMITENTE,
             "to": destinatarios,
-            "subject": f"Pago realizado — OC #{folio} · recolectar / programar entrega",
-            "html": _plantilla_base(f"Pago realizado — OC #{folio}", contenido),
+            "subject": asunto,
+            "html": _plantilla_base(titulo, contenido),
         })
         return True
     except Exception as e:
-        print(f"[EMAIL ERROR] pago OC #{folio}: {e}")
+        print(f"[EMAIL ERROR] {asunto}: {e}")
         return False

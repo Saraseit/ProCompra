@@ -17,7 +17,7 @@ from app.database import supabase
 router = APIRouter(prefix="/reportes", tags=["Reportes"])
 
 # Estados en los que la orden ya representa gasto ejercido.
-ESTADOS_GASTO = ("pagada", "recoleccion", "cerrada")
+ESTADOS_GASTO = ("pagada", "recoleccion", "comprobacion", "cerrada")
 
 ROLES_FINANZAS = ("admin", "compras", "pagos")
 
@@ -26,13 +26,16 @@ SELECT_GASTO = "*,proveedor:proveedor_id(id,nombre,rfc)"
 ETIQUETAS_PAGO = {
     "transferencia":   "Transferencia",
     "tarjeta_credito": "Tarjeta de crédito",
+    "tarjeta_debito":  "Tarjeta de débito",
     "efectivo":        "Efectivo",
+    "credito":         "Crédito del proveedor",
 }
 
 ETIQUETAS_ESTADO = {
     "pagada":      "Pagada",
-    "recoleccion": "Por recolectar",
-    "cerrada":     "Cerrada",
+    "recoleccion":  "Por recolectar",
+    "comprobacion": "Por comprobar",
+    "cerrada":      "Cerrada",
 }
 
 
@@ -74,12 +77,17 @@ def dashboard(usuario=Depends(usuario_actual)):
     resumen = {
         "en_autorizacion":  _contar("autorizacion"),
         "por_recolectar":   _contar("recoleccion"),
+        "por_comprobar":    _contar("comprobacion"),
         "pagadas_mes":      len({p["orden_id"] for p in pagos_mes}),
         "mes":              inicio_mes,
         "incluye_montos":   usuario["rol"] in ROLES_FINANZAS,
     }
     if resumen["incluye_montos"]:
         resumen["gasto_mes"] = round(sum(float(p["monto"] or 0) for p in pagos_mes), 2)
+        resumen["facturas_pendientes"] = (
+            supabase.table("facturas").select("id", count="exact")
+            .is_("orden_id", "null").execute()
+        ).count or 0
     return resumen
 
 

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str
     SUPABASE_ANON_KEY: str        # <- agregar esta línea
     RESEND_API_KEY: str = ""
+    EMAIL_REMITENTE: str = "ProCompra <onboarding@resend.dev>"
     JWT_SECRET: str = ""
     FRONTEND_URL: str = "http://localhost:5174"
 

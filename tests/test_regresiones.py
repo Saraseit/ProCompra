@@ -9,7 +9,7 @@ Correr con:  pytest -q
 import pytest
 from pydantic import ValidationError
 
-from app.api import ordenes, proveedores, requerimientos, reportes
+from app.api import ordenes, proveedores, requerimientos, reportes, facturas
 
 UUID_VALIDO = "11111111-1111-1111-1111-111111111111"
 
@@ -29,6 +29,9 @@ def _partida(**cambios):
     ("ordenes.SELECT_DETALLE",      ordenes.SELECT_DETALLE),
     ("requerimientos.SELECT_REQ",   requerimientos.SELECT_REQ),
     ("reportes.SELECT_GASTO",       reportes.SELECT_GASTO),
+    ("ordenes.SELECT_ADJUNTO",      ordenes.SELECT_ADJUNTO),
+    ("facturas.SELECT_FACTURA",     facturas.SELECT_FACTURA),
+    ("facturas.SELECT_ORDEN_VINCULABLE", facturas.SELECT_ORDEN_VINCULABLE),
 ])
 def test_select_sin_saltos_de_linea(nombre, cadena):
     assert "\n" not in cadena, f"{nombre} tiene salto de línea: perdería los embeds"
@@ -40,14 +43,16 @@ def test_select_sin_saltos_de_linea(nombre, cadena):
 # en el enum metodo_pago de Postgres y hacían fallar el insert.
 
 def test_metodos_de_pago_son_los_del_enum():
-    assert set(ordenes.METODOS_PAGO) == {"transferencia", "tarjeta_credito", "efectivo"}
+    assert set(ordenes.METODOS_PAGO) == {
+        "transferencia", "tarjeta_credito", "tarjeta_debito", "efectivo", "credito",
+    }
 
 
 def test_metodos_de_pago_coinciden_con_los_de_reportes():
     assert set(reportes.ETIQUETAS_PAGO) == set(ordenes.METODOS_PAGO)
 
 
-@pytest.mark.parametrize("metodo", ["personas_morales", "gastos_generales", "tarjeta_debito", ""])
+@pytest.mark.parametrize("metodo", ["personas_morales", "gastos_generales", "debito", ""])
 def test_tipo_de_pago_inexistente_se_rechaza(metodo):
     with pytest.raises(ValidationError):
         ordenes.OrdenCreate(proveedor_id=UUID_VALIDO, tipo_pago=metodo, partidas=[_partida()])
@@ -116,6 +121,9 @@ def test_requerimiento_valido_recorta_la_descripcion():
     {"monto": -5},
     {"referencia": "  "},
     {"metodo": "personas_morales"},
+    {"metodo": "credito"},
+    {"metodo": "efectivo", "referencia": None},
+    {"metodo": "tarjeta_debito", "entregado_a": "   "},
 ])
 def test_pago_invalido_se_rechaza(cambios):
     datos = {"fecha_pago": "2026-09-09", "referencia": "REF1",
@@ -151,9 +159,66 @@ def test_proveedor_sin_nombre_se_rechaza(nombre):
 def test_estados_de_orden_cubren_el_enum():
     assert set(ordenes.ESTADOS_ORDEN) == {
         "borrador", "autorizacion", "autorizada",
-        "pagada", "recoleccion", "cerrada", "rechazada",
+        "pagada", "recoleccion", "comprobacion", "cerrada", "rechazada",
     }
 
 
 def test_los_estados_de_gasto_son_estados_validos():
     assert set(reportes.ESTADOS_GASTO) <= set(ordenes.ESTADOS_ORDEN)
+
+
+def test_entrega_de_efectivo_no_exige_referencia():
+    pago = ordenes.PagoCreate(fecha_pago="2026-10-27", metodo="efectivo", monto=500,
+                              entregado_a="  Juan Pérez ")
+    assert pago.entregado_a == "Juan Pérez" and pago.referencia is None
+
+
+# ── Máquina de estados ────────────────────────────────────
+
+def test_las_transiciones_solo_llevan_a_estados_validos():
+    for destino, (origenes, roles, _) in ordenes.TRANSICIONES.items():
+        assert destino in ordenes.ESTADOS_ORDEN
+        assert origenes <= set(ordenes.ESTADOS_ORDEN)
+        assert set(roles) <= set(ordenes.ROLES_TODOS)
+
+
+def test_almacen_puede_enviar_pero_no_autorizar():
+    assert "almacen" in ordenes.TRANSICIONES["autorizacion"][1]
+    assert "almacen" not in ordenes.TRANSICIONES["autorizada"][1]
+    assert "almacen" in ordenes.ROLES_OPERACION
+
+
+def test_devolver_y_cancelar_exigen_motivo():
+    assert ordenes.TRANSICIONES["borrador"][2] is True
+    assert ordenes.TRANSICIONES["rechazada"][2] is True
+
+
+def test_no_se_cancela_una_orden_pagada():
+    assert not ({"pagada", "recoleccion", "comprobacion", "cerrada"}
+                & ordenes.TRANSICIONES["rechazada"][0])
+
+
+# ── Rutas ─────────────────────────────────────────────────
+
+def test_la_app_registra_las_rutas_nuevas():
+    import main
+    rutas = {(m, r.path) for r in main.app.routes for m in getattr(r, "methods", set())}
+    for esperada in [
+        ("POST", "/api/ordenes/{orden_id}/adjuntos"),
+        ("GET", "/api/adjuntos/{adjunto_id}/url"),
+        ("DELETE", "/api/adjuntos/{adjunto_id}"),
+        ("POST", "/api/ordenes/{orden_id}/comprobacion"),
+        ("POST", "/api/ordenes/{orden_id}/cerrar"),
+        ("POST", "/api/facturas/xml"),
+        ("GET", "/api/facturas"),
+        ("PATCH", "/api/facturas/{factura_id}"),
+        ("GET", "/api/facturas/{factura_id}/candidatas"),
+        ("GET", "/api/reportes/dashboard"),
+    ]:
+        assert esperada in rutas, esperada
+
+
+def test_etiquetas_del_pdf_cubren_pagos_y_estados():
+    from app.utils import pdf
+    assert set(pdf.ETIQUETAS_PAGO) == set(ordenes.METODOS_PAGO)
+    assert set(pdf.ETIQUETAS_ESTADO) == set(ordenes.ESTADOS_ORDEN)

@@ -31,7 +31,9 @@ MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
 ETIQUETAS_PAGO = {
     "transferencia":   "Transferencia",
     "tarjeta_credito": "Tarjeta de crédito",
+    "tarjeta_debito":  "Tarjeta de débito",
     "efectivo":        "Efectivo",
+    "credito":         "Crédito del proveedor",
 }
 
 ETIQUETAS_ESTADO = {
@@ -40,8 +42,9 @@ ETIQUETAS_ESTADO = {
     "autorizada":   "Autorizada",
     "pagada":       "Pagada",
     "recoleccion":  "Por recolectar",
+    "comprobacion": "Por comprobar",
     "cerrada":      "Cerrada",
-    "rechazada":    "Rechazada",
+    "rechazada":    "Cancelada",
 }
 
 
