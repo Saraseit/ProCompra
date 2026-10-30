@@ -131,3 +131,22 @@ def comprobacion_lista(orden: dict) -> None:
         f"Orden #{folio} lista para cerrar",
         contenido,
     )
+
+
+def orden_modificada(orden: dict, titulo: str, motivo: str, lineas: list[str]) -> None:
+    """Admin y contabilidad: alguien cambió una orden que ya estaba en curso."""
+    folio = orden.get("folio")
+    cambios = "".join(f'<li style="margin:3px 0">{_esc(l)}</li>' for l in lineas)
+    contenido = f"""
+    <p style="color:#5A5648;margin:0 0 12px">{_esc(titulo)}.</p>
+    <p style="color:#5A5648;margin:0 0 16px"><strong>Motivo:</strong> {_esc(motivo or '—')}</p>
+    {_resumen(orden)}
+    <ul style="color:#26241D;font-size:13px;padding-left:18px;margin:0">{cambios}</ul>
+    {_boton('Revisar en ProCompra')}
+    """
+    enviar(
+        _correos_por_rol(ROLES_CONTABILIDAD),
+        f"Cambio en OC #{folio}",
+        f"Orden #{folio} modificada",
+        contenido,
+    )

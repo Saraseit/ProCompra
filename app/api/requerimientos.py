@@ -143,7 +143,7 @@ def obtener_requerimiento(req_id: str, usuario = Depends(usuario_actual)):
 @router.post("", status_code=201)
 def crear_requerimiento(
     req: RequerimientoCreate,
-    usuario = Depends(usuario_actual),
+    usuario = Depends(requiere_rol(*ROLES_OPERACION)),
 ):
     datos = req.model_dump()
     datos["estado"] = "pendiente"

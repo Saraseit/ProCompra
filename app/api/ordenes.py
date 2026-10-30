@@ -13,7 +13,8 @@ from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 from app.roles import ROLES_ADMIN, ROLES_OPERACION, ROLES_CONTABILIDAD, ROLES_TODOS
 from app.utils.pdf import generar_pdf_orden
-from app.utils import notificaciones
+from app.utils import ajustes, notificaciones
+from app.utils.bandeja import falta_tabla
 
 router = APIRouter(prefix="/ordenes", tags=["Órdenes de compra"])
 
@@ -253,7 +254,59 @@ def orden_completa(orden_id: str) -> Optional[dict]:
         .order("created_at", desc=True)
         .execute()
     ).data
+    _agregar_vinculos(orden)
     return orden
+
+
+# Orden ligada (origen o complemento) tal como se muestra en el detalle.
+SELECT_ORDEN_LIGADA = "id,folio,estado,total,proveedor:proveedor_id(nombre)"
+SELECT_PARTIDA_LIGADA = (
+    "id,cantidad,cantidad_original,partida_origen_id,"
+    "orden:orden_id(id,folio,estado,proveedor:proveedor_id(nombre))"
+)
+
+
+def _agregar_vinculos(orden: dict) -> None:
+    """Orden de origen, complementos y reparto del surtido de cada partida.
+
+    Usa columnas de la migración de la fase 4; sin ella la orden se muestra
+    sin vínculos en lugar de fallar.
+    """
+    orden["origen"] = None
+    orden["complementos"] = []
+    try:
+        if orden.get("orden_origen_id"):
+            orden["origen"] = una_fila(
+                supabase.table("ordenes_compra").select(SELECT_ORDEN_LIGADA).eq("id", orden["orden_origen_id"])
+            )
+        orden["complementos"] = (
+            supabase.table("ordenes_compra").select(SELECT_ORDEN_LIGADA)
+            .eq("orden_origen_id", orden["id"]).neq("estado", "rechazada").order("folio").execute()
+        ).data or []
+
+        propia = {"id": orden["id"], "folio": orden.get("folio"), "estado": orden.get("estado"),
+                  "proveedor": {"nombre": (orden.get("proveedor") or {}).get("nombre")}}
+        raices = {p["id"]: {**p, "orden": propia} for p in orden["partidas"] if p.get("cantidad_original") is not None}
+        origenes = [p["partida_origen_id"] for p in orden["partidas"] if p.get("partida_origen_id")]
+        if origenes:
+            for r in supabase.table("partidas").select(SELECT_PARTIDA_LIGADA).in_("id", origenes).execute().data or []:
+                raices[r["id"]] = r
+        if not raices:
+            return
+        hijos = [
+            h for h in supabase.table("partidas").select(SELECT_PARTIDA_LIGADA)
+            .in_("partida_origen_id", list(raices)).execute().data or []
+            if (h.get("orden") or {}).get("estado") != "rechazada"
+        ]
+        for p in orden["partidas"]:
+            raiz_id = p["id"] if p["id"] in raices else p.get("partida_origen_id")
+            if raiz_id in raices:
+                p["surtido"] = ajustes.reparto(
+                    raices[raiz_id], [h for h in hijos if h["partida_origen_id"] == raiz_id], p["id"]
+                )
+    except Exception as e:
+        if not falta_tabla(e):
+            print(f"[VINCULOS] orden {orden.get('id')}: {e}")
 
 
 def _avisar(tareas: BackgroundTasks, funcion, orden_id: str, *args) -> None:
