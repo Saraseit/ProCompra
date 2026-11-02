@@ -4,8 +4,8 @@ app/utils/cfdi.py
 Lectura de facturas CFDI (versiones 3.3 y 4.0) y su vinculación con órdenes.
 
 Solo se usa la biblioteca estándar: del XML basta con el comprobante, el
-emisor, el receptor y el timbre fiscal. No se valida la firma del SAT; para
-eso está el portal del SAT o un PAC.
+emisor, el receptor, los conceptos y el timbre fiscal. No se valida la firma
+del SAT; para eso está el portal del SAT o un PAC.
 """
 
 import xml.etree.ElementTree as ET
@@ -38,6 +38,15 @@ def _numero(valor: Optional[str]) -> Optional[float]:
         return None
     try:
         return round(float(valor), 2)
+    except ValueError:
+        return None
+
+
+def _decimal(valor: Optional[str], decimales: int = 4) -> Optional[float]:
+    if valor in (None, ""):
+        return None
+    try:
+        return round(float(valor), decimales)
     except ValueError:
         return None
 
@@ -90,6 +99,11 @@ def leer_cfdi(contenido: bytes) -> dict:
         except ValueError:
             fecha = None
 
+    tipo_cambio = _decimal(attr.get("tipocambio"), 6)
+    moneda = (attr.get("moneda") or "").upper()
+    # Los precios del histórico van en pesos; XXX es "sin moneda" (pagos).
+    factor = tipo_cambio if moneda not in ("", "MXN", "XXX") and tipo_cambio else 1.0
+
     return {
         "uuid_fiscal":      uuid_fiscal,
         "rfc_emisor":       (emisor.attrib.get("Rfc") or emisor.attrib.get("rfc") or "").upper().strip(),
@@ -106,7 +120,50 @@ def leer_cfdi(contenido: bytes) -> dict:
         "metodo_pago":      attr.get("metodopago"),
         "forma_pago":       attr.get("formapago"),
         "tipo_comprobante": attr.get("tipodecomprobante"),
+        "conceptos":        _conceptos(raiz, factor),
     }
+
+
+def _conceptos(raiz, factor: float) -> list[dict]:
+    """Renglones de la factura con su precio unitario neto, sin IVA y en pesos.
+
+    El precio neto descuenta el descuento del renglón: (importe − descuento) /
+    cantidad. Renglones sin cantidad o sin descripción no sirven para el
+    histórico y se omiten.
+    """
+    nodo = _hijo(raiz, "Conceptos")
+    if nodo is None:
+        return []
+    renglones = []
+    for c in nodo:
+        if _local(c.tag) != "Concepto":
+            continue
+        a = {k.lower(): v for k, v in c.attrib.items()}
+        descripcion = " ".join((a.get("descripcion") or "").split())
+        cantidad = _decimal(a.get("cantidad"))
+        if not descripcion or not cantidad or cantidad <= 0:
+            continue
+        valor = _decimal(a.get("valorunitario"))
+        importe = _numero(a.get("importe"))
+        if importe is None and valor is not None:
+            importe = round(valor * cantidad, 2)
+        if importe is None:
+            continue
+        descuento = _numero(a.get("descuento")) or 0.0
+        renglones.append({
+            "renglon":           len(renglones) + 1,
+            "descripcion":       descripcion[:500],
+            "clave_sat":         a.get("claveprodserv"),
+            "no_identificacion": (a.get("noidentificacion") or "")[:100] or None,
+            "cantidad":          cantidad,
+            "unidad":            (a.get("unidad") or "").strip()[:40] or None,
+            "clave_unidad":      (a.get("claveunidad") or "").strip().upper() or None,
+            "valor_unitario":    round(valor * factor, 4) if valor is not None else None,
+            "descuento":         round(descuento * factor, 2) if descuento else None,
+            "importe":           round(importe * factor, 2),
+            "precio_unitario":   round((importe - descuento) * factor / cantidad, 4),
+        })
+    return renglones
 
 
 def total_coincide(factura_total: float, monto: Optional[float]) -> bool:

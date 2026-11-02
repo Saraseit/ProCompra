@@ -15,6 +15,7 @@ from app.roles import ROLES_ADMIN, ROLES_OPERACION, ROLES_CONTABILIDAD, ROLES_TO
 from app.utils.pdf import generar_pdf_orden
 from app.utils import ajustes, notificaciones
 from app.utils.bandeja import falta_tabla
+from app.api import precios
 
 router = APIRouter(prefix="/ordenes", tags=["Órdenes de compra"])
 
@@ -511,6 +512,7 @@ def cambiar_estado(
 
     if body.estado == "autorizacion":
         _avisar(tareas, notificaciones.por_autorizar, orden_id)
+        tareas.add_task(precios.revisar_orden, orden_id, usuario["id"])
     elif body.estado == "autorizada":
         _avisar(tareas, notificaciones.resultado_autorizacion, orden_id, "autorizada")
     elif body.estado == "borrador":

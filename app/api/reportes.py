@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.auth import usuario_actual, requiere_rol
 from app.database import supabase
 from app.utils import credito
+from app.api import precios
 
 router = APIRouter(prefix="/reportes", tags=["Reportes"])
 
@@ -93,10 +94,10 @@ def dashboard(usuario=Depends(usuario_actual)):
     }
     if resumen["incluye_montos"]:
         resumen["gasto_mes"] = round(sum(float(p["monto"] or 0) for p in pagos_mes), 2)
-        resumen["facturas_pendientes"] = (
-            supabase.table("facturas").select("id", count="exact")
-            .is_("orden_id", "null").execute()
-        ).count or 0
+        pendientes = supabase.table("facturas").select("id", count="exact").is_("orden_id", "null")
+        if precios.disponible():
+            pendientes = pendientes.eq("historica", False)
+        resumen["facturas_pendientes"] = pendientes.execute().count or 0
         cuentas = _estados_de_cuenta()["totales"]
         resumen["credito_vencido"] = cuentas["vencido"]
         resumen["credito_ordenes_vencidas"] = cuentas["ordenes_vencidas"]

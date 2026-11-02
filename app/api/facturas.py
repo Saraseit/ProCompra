@@ -15,8 +15,10 @@ from pydantic import BaseModel, field_validator
 
 from app.auth import requiere_rol
 from app.database import supabase, una_fila
+from app.utils.bandeja import falta_tabla
 from app.api.ordenes import registrar_evento, _uuid_valido
 from app.utils import cfdi, storage
+from app.api import precios
 
 router = APIRouter(prefix="/facturas", tags=["Facturas"])
 
@@ -65,12 +67,26 @@ def _completar_rfc_proveedor(orden_id: str, rfc: str) -> None:
         supabase.table("proveedores").update({"rfc": rfc}).eq("id", prov["id"]).execute()
 
 
+def _factura_previa(uuid_fiscal: str):
+    try:
+        return una_fila(supabase.table("facturas").select("id, historica, orden:orden_id(folio)")
+                        .eq("uuid_fiscal", uuid_fiscal))
+    except Exception as e:
+        if not falta_tabla(e):
+            raise
+        return una_fila(supabase.table("facturas").select("id, orden:orden_id(folio)")
+                        .eq("uuid_fiscal", uuid_fiscal))
+
+
 def registrar_xml(contenido: bytes, nombre: str, usuario: dict, orden_id: str = None,
                   contexto: dict = None) -> dict:
     """Lee un CFDI, lo guarda y lo vincula. Nunca lanza por un XML malo:
     devuelve el resultado para reportarlo junto con los demás archivos.
 
     `contexto` permite reutilizar la lista de órdenes en una carga masiva.
+
+    Si la factura ya estaba como histórica (importada para precios), deja de
+    serlo: se guarda su XML y se vincula como cualquier otra.
     """
     base = {"archivo": nombre}
     try:
@@ -78,6 +94,7 @@ def registrar_xml(contenido: bytes, nombre: str, usuario: dict, orden_id: str = 
     except cfdi.CfdiInvalido as e:
         return {**base, "estado": "invalida", "mensaje": str(e)}
 
+    conceptos = datos.pop("conceptos", [])
     base.update({"total": datos["total"], "emisor": datos["nombre_emisor"] or datos["rfc_emisor"]})
 
     if datos["tipo_comprobante"] and datos["tipo_comprobante"].upper() != "I":
@@ -86,11 +103,11 @@ def registrar_xml(contenido: bytes, nombre: str, usuario: dict, orden_id: str = 
                 "mensaje": f"Es un CFDI de {tipos.get(datos['tipo_comprobante'].upper(), 'otro tipo')}; "
                            "solo se vinculan facturas de ingreso"}
 
-    if datos["uuid_fiscal"]:
-        previa = una_fila(
-            supabase.table("facturas").select("id, orden:orden_id(folio)")
-            .eq("uuid_fiscal", datos["uuid_fiscal"])
-        )
+    previa = _factura_previa(datos["uuid_fiscal"]) if datos["uuid_fiscal"] else None
+    if previa and previa.get("historica"):
+        historica = previa
+    else:
+        historica = None
         if previa:
             folio = (previa.get("orden") or {}).get("folio")
             donde = f" (vinculada a la orden #{folio})" if folio else " (pendiente de vincular)"
@@ -114,11 +131,17 @@ def registrar_xml(contenido: bytes, nombre: str, usuario: dict, orden_id: str = 
         "xml_ruta":    ruta,
         "subido_por":  usuario["id"],
     }
-    res = supabase.table("facturas").insert(fila).execute()
+    if historica:
+        fila = {k: fila[k] for k in ("orden_id", "vinculacion", "xml_ruta", "subido_por")}
+        res = supabase.table("facturas").update({**fila, "historica": False}).eq("id", historica["id"]).execute()
+    else:
+        res = supabase.table("facturas").insert(fila).execute()
     if not res.data:
         storage.borrar(ruta)
         return {**base, "estado": "invalida", "mensaje": "No se pudo guardar la factura"}
     factura = res.data[0]
+    if not historica:
+        precios.guardar_conceptos(factura, conceptos)
 
     if not elegida:
         return {**base, "estado": "pendiente", "factura_id": factura["id"],
@@ -133,6 +156,7 @@ def registrar_xml(contenido: bytes, nombre: str, usuario: dict, orden_id: str = 
                 f" · {'automática' if vinculacion == 'automatica' else 'manual'}",
         usuario_id=usuario["id"],
     )
+    precios.revisar_factura(factura["id"], elegida["id"], actor=usuario["id"])
     return {**base, "estado": "vinculada", "factura_id": factura["id"], "folio": elegida["folio"],
             "mensaje": f"Vinculada a la orden #{elegida['folio']}"}
 
@@ -172,6 +196,8 @@ def listar_facturas(
     usuario=Depends(requiere_rol(*ROLES_FACTURAS)),
 ):
     query = supabase.table("facturas").select(SELECT_FACTURA).order("created_at", desc=True).limit(500)
+    if precios.disponible():
+        query = query.eq("historica", False)  # las del histórico de precios no se vinculan
     if estado == "pendiente":
         query = query.is_("orden_id", "null")
     elif estado == "vinculada":
@@ -231,6 +257,7 @@ def vincular(factura_id: str, body: Vinculo, usuario=Depends(requiere_rol(*ROLES
         _completar_rfc_proveedor(datos["orden_id"], factura.get("rfc_emisor"))
         registrar_evento(datos["orden_id"], "Factura vinculada", detalle=f"{etiqueta} · manual",
                          usuario_id=usuario["id"])
+        precios.revisar_factura(factura_id, datos["orden_id"], actor=usuario["id"])
     return res.data[0]
 
 
