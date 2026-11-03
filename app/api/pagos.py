@@ -23,13 +23,13 @@ from app.roles import ROLES_CONTABILIDAD
 from app.utils import credito, pagos as cuentas
 from app.utils.bandeja import falta_tabla
 from app.api.ordenes import (
-    DatosPago, ESTADOS_PAGO_CREDITO, _uuid_valido, despues_del_pago, motivo_sin_pago, registrar_evento,
+    DatosPago, ESTADOS_PAGO_CREDITO, _uuid_valido, con_programados, despues_del_pago, motivo_sin_pago,
+    registrar_evento,
 )
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
 
 # Una sola línea: PostgREST pierde los embebidos si la cadena es multilínea.
-# El proveedor va con * para que dias_credito llegue sin listarlo aquí.
 SELECT_POR_PAGAR = (
     "id,folio,fecha,estado,tipo_pago,total,monto_comprobado,proveedor_id,proveedor:proveedor_id(*),"
     "pagos(fecha_pago,monto,metodo,referencia),recolecciones(completado,fecha_real),"
@@ -84,9 +84,10 @@ class PagoVarias(DatosPago):
 
 @router.get("/pendientes")
 def pendientes(usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD))):
-    """Órdenes con saldo: las de esta semana (vencidas, por vencer, contado) y las demás."""
+    """Órdenes con saldo: esta semana (vencido, lo que cae antes del domingo, contado),
+    después, y las de crédito que aún no tienen fecha de pago."""
     a_credito = (
-        supabase.table("ordenes_compra").select(SELECT_POR_PAGAR)
+        supabase.table("ordenes_compra").select(con_programados(SELECT_POR_PAGAR))
         .eq("tipo_pago", "credito").in_("estado", list(ESTADOS_PAGO_CREDITO)).execute()
     ).data or []
     contado = (
@@ -101,7 +102,7 @@ def registrar(body: PagoVarias, usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD
     ids = [a.orden_id for a in body.aplicaciones]
     ordenes = {
         o["id"]: o for o in
-        (supabase.table("ordenes_compra").select(SELECT_A_PAGAR).in_("id", ids).execute()).data or []
+        (supabase.table("ordenes_compra").select(con_programados(SELECT_A_PAGAR)).in_("id", ids).execute()).data or []
     }
     if len(ordenes) != len(ids):
         raise HTTPException(status_code=404, detail="Alguna de las órdenes ya no existe")
@@ -113,8 +114,8 @@ def registrar(body: PagoVarias, usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD
         if motivo:
             errores.append(motivo)
         elif orden["tipo_pago"] == "credito":
-            pagado = sum(float(p.get("monto") or 0) for p in orden.get("pagos") or [])
-            saldo = round(credito.importe(orden) - pagado, 2)
+            # La deuda incluye el recargo si el calendario suma más que la orden.
+            saldo = credito.calendario(orden, date.today())["saldo"]
             if a.monto > saldo + credito.TOLERANCIA:
                 errores.append(f"A la orden #{orden['folio']} le quedan ${max(saldo, 0):,.2f}: "
                                f"no se le pueden aplicar ${a.monto:,.2f}")

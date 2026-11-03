@@ -15,6 +15,7 @@ from app.auth import usuario_actual, requiere_rol
 from app.database import supabase
 from app.utils import credito
 from app.api import precios
+from app.api.ordenes import con_programados
 
 router = APIRouter(prefix="/reportes", tags=["Reportes"])
 
@@ -26,7 +27,6 @@ ROLES_FINANZAS = ("admin", "compras", "pagos")
 SELECT_GASTO = "*,proveedor:proveedor_id(id,nombre,rfc)"
 
 # Una sola línea: PostgREST pierde los embebidos si la cadena es multilínea.
-# El proveedor va con * para que dias_credito llegue sin listarlo aquí.
 SELECT_CREDITO = (
     "id,folio,fecha,estado,total,monto_comprobado,proveedor_id,proveedor:proveedor_id(*),"
     "pagos(fecha_pago,monto,metodo,referencia),recolecciones(completado,fecha_real),"
@@ -107,7 +107,7 @@ def dashboard(usuario=Depends(usuario_actual)):
 def _estados_de_cuenta() -> dict:
     ordenes = (
         supabase.table("ordenes_compra")
-        .select(SELECT_CREDITO)
+        .select(con_programados(SELECT_CREDITO))
         .eq("tipo_pago", "credito")
         .in_("estado", list(credito.ESTADOS_DEUDA))
         .execute()

@@ -8,6 +8,7 @@ from typing import Optional
 from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 from app.roles import ROLES_ADMIN, ROLES_OPERACION
+from app.utils.bandeja import falta_tabla
 
 router = APIRouter(prefix="/proveedores", tags=["Proveedores"])
 
@@ -48,7 +49,11 @@ class ProveedorBase(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     cuenta_bancaria: Optional[str] = None
-    # Plazo de crédito que da el proveedor. Vacío = no da crédito o no se ha pactado.
+    # Nos da crédito: sus órdenes nacen a crédito. El plazo no es del proveedor
+    # sino de cada compra (calendario de pagos de la orden).
+    da_credito: Optional[bool] = None
+    # Plazo fijo de la fase 3; ya no se usa para vencimientos. Se conserva por
+    # compatibilidad con los proveedores que lo tenían capturado.
     dias_credito: Optional[int] = Field(default=None, ge=0, le=365)
 
     @field_validator("nombre")
@@ -74,6 +79,17 @@ class ProveedorUpdate(ProveedorBase):
         if not limpio:
             raise ValueError("el nombre del proveedor es obligatorio")
         return limpio
+
+
+def _guardar(consulta):
+    """Ejecuta el insert/update; sin la migración de la fase 7 no existe da_credito."""
+    try:
+        return consulta.execute()
+    except Exception as e:
+        if falta_tabla(e) and "da_credito" in str(e):
+            raise HTTPException(status_code=503, detail="Falta activar la actualización de la base de datos "
+                                                        "(fase 7) para marcar proveedores con crédito")
+        raise
 
 
 @router.get("")
@@ -106,11 +122,7 @@ def crear_proveedor(
     usuario = Depends(requiere_rol(*ROLES_OPERACION))
 ):
     _rechazar_si_duplicado(proveedor.nombre)
-    res = (
-        supabase.table("proveedores")
-        .insert(proveedor.model_dump(exclude_none=True))
-        .execute()
-    )
+    res = _guardar(supabase.table("proveedores").insert(proveedor.model_dump(exclude_none=True)))
     if not res.data:
         raise HTTPException(status_code=400, detail="No se pudo crear el proveedor")
     return res.data[0]
@@ -130,12 +142,7 @@ def actualizar_proveedor(
         raise HTTPException(status_code=400, detail="No hay campos para actualizar")
     if "nombre" in datos:
         _rechazar_si_duplicado(datos["nombre"], excluir_id=proveedor_id)
-    res = (
-        supabase.table("proveedores")
-        .update(datos)
-        .eq("id", proveedor_id)
-        .execute()
-    )
+    res = _guardar(supabase.table("proveedores").update(datos).eq("id", proveedor_id))
     if not res.data:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
     return res.data[0]

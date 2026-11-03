@@ -2,6 +2,7 @@
 app/api/ordenes.py
 """
 
+import time
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
@@ -13,7 +14,7 @@ from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 from app.roles import ROLES_ADMIN, ROLES_OPERACION, ROLES_CONTABILIDAD, ROLES_TODOS
 from app.utils.pdf import generar_pdf_orden
-from app.utils import ajustes, notificaciones, storage
+from app.utils import ajustes, credito, notificaciones, storage
 from app.utils.bandeja import falta_tabla
 from app.api import precios
 
@@ -189,6 +190,31 @@ class PagoCreate(DatosPago):
     monto: float = Field(gt=0)
 
 
+class PagoProgramado(BaseModel):
+    """Una fecha del calendario de pagos de una compra a crédito."""
+    fecha: str
+    monto: float = Field(gt=0)
+    notas: Optional[str] = None
+
+    @field_validator("fecha")
+    @classmethod
+    def _fecha_valida(cls, v: str) -> str:
+        try:
+            return date.fromisoformat(str(v)[:10]).isoformat()
+        except ValueError:
+            raise ValueError("debe ser una fecha AAAA-MM-DD")
+
+    @field_validator("notas")
+    @classmethod
+    def _limpiar(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
+
+
+class Calendario(BaseModel):
+    """El calendario completo; una lista vacía quita todas las fechas."""
+    programados: list[PagoProgramado] = Field(default_factory=list, max_length=36)
+
+
 class BorradoOrdenes(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=200)
     con_requerimientos: bool = False
@@ -229,8 +255,38 @@ def registrar_evento(orden_id: str, evento: str, detalle: str = None, usuario_id
 
 
 def da_credito(proveedor: Optional[dict]) -> bool:
-    """Un proveedor da crédito si tiene días de crédito pactados (más de cero)."""
-    return bool((proveedor or {}).get("dias_credito"))
+    """¿El proveedor nos da crédito? Antes de la fase 7 se deducía de dias_credito."""
+    proveedor = proveedor or {}
+    if "da_credito" in proveedor:
+        return bool(proveedor["da_credito"])
+    return bool(proveedor.get("dias_credito"))
+
+
+_calendario = {"listo": False, "revisado": 0.0}
+
+
+def calendario_disponible() -> bool:
+    """¿Ya existe pagos_programados (fase 7)? Sin ella toda deuda queda sin fecha."""
+    if _calendario["listo"]:
+        return True
+    if time.time() - _calendario["revisado"] < 30:
+        return False
+    _calendario["revisado"] = time.time()
+    try:
+        supabase.table("pagos_programados").select("id").limit(1).execute()
+        _calendario["listo"] = True
+    except Exception as e:
+        if not falta_tabla(e):
+            raise
+    return _calendario["listo"]
+
+
+# Embebido del calendario para los listados de crédito y pagos.
+EMBED_PROGRAMADOS = ",programados:pagos_programados(id,fecha,monto,notas)"
+
+
+def con_programados(select: str) -> str:
+    return select + EMBED_PROGRAMADOS if calendario_disponible() else select
 
 
 # Estados en que una orden recibe pagos: la de crédito en cuanto se autoriza
@@ -304,6 +360,11 @@ def orden_completa(orden_id: str) -> Optional[dict]:
     orden["recolecciones"] = tabla("recolecciones").order("created_at").execute().data
     orden["adjuntos"]      = tabla("adjuntos", SELECT_ADJUNTO).order("created_at").execute().data
     orden["facturas"]      = tabla("facturas", SELECT_FACTURA_ORDEN).order("created_at").execute().data
+    orden["programados"]   = (
+        tabla("pagos_programados", "id,fecha,monto,notas").order("fecha").execute().data
+        if calendario_disponible() else []
+    )
+    orden["calendario"]    = credito.movimiento(orden, date.today()) if orden.get("tipo_pago") == "credito" else None
     orden["historial"]     = (
         supabase.table("historial")
         .select("*,usuario:usuario_id(id,nombre)")
@@ -429,7 +490,7 @@ def crear_orden(
 ):
     proveedor = una_fila(
         supabase.table("proveedores")
-        .select("id, activo, dias_credito")
+        .select("*")
         .eq("id", orden.proveedor_id)
     )
     if not proveedor:
@@ -482,7 +543,8 @@ def crear_orden(
         }).in_("id", req_ids).execute()
 
     registrar_evento(orden_id, "Orden creada",
-                     detalle=f"A crédito ({proveedor['dias_credito']} días)" if a_credito else None,
+                     detalle="A crédito: la fecha de pago se captura en la orden cuando se conozca"
+                     if a_credito else None,
                      usuario_id=usuario["id"])
     return obtener_orden(orden_id, usuario)
 
@@ -605,6 +667,47 @@ def registrar_pago(
 
     despues_del_pago(orden, datos, usuario["id"])
     return res.data[0]
+
+
+@router.put("/{orden_id}/programados")
+def guardar_calendario(
+    orden_id: str,
+    body: Calendario,
+    usuario=Depends(requiere_rol(*ROLES_TODOS)),
+):
+    """Fechas y montos en que se pagará una compra a crédito.
+
+    Lo captura quien lo sepa (quien negoció con el proveedor o contabilidad) y
+    se puede cambiar cuando se difiere. Si el proveedor cobra recargo por
+    diferir, la suma del calendario puede ser mayor que la orden.
+    """
+    if not calendario_disponible():
+        raise HTTPException(status_code=503, detail="Falta activar la actualización de la base de datos "
+                                                    "(fase 7) para capturar fechas de pago")
+    orden = _orden_minima(orden_id)
+    if orden["tipo_pago"] != "credito":
+        raise HTTPException(status_code=400, detail="Solo las órdenes a crédito llevan calendario de pagos")
+    if orden["estado"] == "rechazada":
+        raise HTTPException(status_code=409, detail="La orden está cancelada")
+
+    supabase.table("pagos_programados").delete().eq("orden_id", orden_id).execute()
+    filas = [
+        {"orden_id": orden_id, "fecha": p.fecha, "monto": round(p.monto, 2), "notas": p.notas,
+         "creado_por": usuario["id"]}
+        for p in sorted(body.programados, key=lambda p: p.fecha)
+    ]
+    if filas:
+        supabase.table("pagos_programados").insert(filas).execute()
+
+    total = sum(f["monto"] for f in filas)
+    detalle = "\n".join(
+        f"{date.fromisoformat(f['fecha']).strftime('%d/%m/%Y')} · ${f['monto']:,.2f}" + (f" · {f['notas']}" if f["notas"] else "")
+        for f in filas
+    ) or "Sin fechas: queda pendiente de programar"
+    if len(filas) > 1:
+        detalle += f"\nTotal ${total:,.2f} en {len(filas)} pagos"
+    registrar_evento(orden_id, "Fechas de pago actualizadas", detalle=detalle, usuario_id=usuario["id"])
+    return orden_completa(orden_id)["calendario"]
 
 
 @router.post("/{orden_id}/recoleccion", status_code=201)

@@ -12,13 +12,17 @@ from app.utils import pagos
 HOY = date(2026, 11, 4)  # miércoles: la semana cierra el domingo 8
 
 
-def _orden(id_="o1", tipo_pago="credito", estado="recoleccion", total=1000.0, fecha="2026-10-01", dias=30, **extra):
+def _orden(id_="o1", tipo_pago="credito", estado="recoleccion", total=1000.0, fecha="2026-10-01", programados=None, **extra):
     return {
         "id": id_, "folio": int(id_[-1]), "fecha": fecha, "estado": estado, "tipo_pago": tipo_pago,
         "total": total, "monto_comprobado": extra.get("monto_comprobado"),
-        "proveedor": {"id": "p1", "nombre": "Pinturen", "dias_credito": dias},
-        "pagos": extra.get("pagos", []), "recolecciones": [], "facturas": extra.get("facturas", []),
+        "proveedor": {"id": "p1", "nombre": "Pinturen", "da_credito": True},
+        "pagos": extra.get("pagos", []), "programados": programados or [], "facturas": extra.get("facturas", []),
     }
+
+
+def _prog(*pares):
+    return [{"id": f"c{i}", "fecha": f, "monto": m} for i, (f, m) in enumerate(pares)]
 
 
 # ── Qué urge esta semana ─────────────────────────────────
@@ -30,38 +34,51 @@ def test_la_semana_cierra_el_domingo():
 
 
 @pytest.mark.parametrize("fecha, grupo, situacion", [
-    ("2026-09-20", "semana", "vencida"),     # venció el 20/10
-    ("2026-10-08", "semana", "por_vencer"),  # vence el sábado 7/11
-    ("2026-10-09", "semana", "por_vencer"),  # vence el domingo 8/11
-    ("2026-10-10", "despues", "por_vencer"),  # vence el lunes 9/11
-    ("2026-10-30", "despues", "vigente"),
+    ("2026-10-20", "semana", "vencida"),
+    ("2026-11-07", "semana", "por_vencer"),
+    ("2026-11-08", "semana", "por_vencer"),   # domingo
+    ("2026-11-09", "despues", "por_vencer"),  # lunes
+    ("2026-11-30", "despues", "vigente"),
 ])
-def test_credito_urge_si_vence_antes_del_domingo(fecha, grupo, situacion):
-    r = pagos.pendiente(_orden(fecha=fecha), HOY)
+def test_credito_urge_si_su_fecha_cae_antes_del_domingo(fecha, grupo, situacion):
+    r = pagos.pendiente(_orden(programados=_prog((fecha, 1000))), HOY)
     assert (r["grupo"], r["situacion"], r["tipo"]) == (grupo, situacion, "credito")
+
+
+def test_compra_dividida_solo_pide_lo_de_esta_semana():
+    o = _orden(total=1000, programados=_prog(("2026-11-06", 520), ("2026-12-06", 520)))
+    r = pagos.pendiente(o, HOY)
+    assert (r["grupo"], r["a_pagar"], r["saldo"], r["recargo"]) == ("semana", 520.0, 1040.0, 40.0)
+
+
+def test_despues_pide_el_siguiente_pago():
+    r = pagos.pendiente(_orden(programados=_prog(("2026-11-20", 300), ("2026-12-20", 700))), HOY)
+    assert (r["grupo"], r["a_pagar"], r["vencimiento"]) == ("despues", 300.0, "2026-11-20")
 
 
 def test_contado_autorizada_urge_siempre():
     r = pagos.pendiente(_orden(tipo_pago="transferencia", estado="autorizada", fecha="2026-11-04"), HOY)
-    assert (r["grupo"], r["tipo"], r["saldo"]) == ("semana", "contado", 1000.0)
+    assert (r["grupo"], r["tipo"], r["saldo"], r["a_pagar"]) == ("semana", "contado", 1000.0, 1000.0)
 
 
-def test_credito_sin_plazo_queda_para_despues():
-    r = pagos.pendiente(_orden(dias=None), HOY)
-    assert (r["grupo"], r["situacion"]) == ("despues", "sin_plazo")
+def test_credito_sin_fecha_va_aparte():
+    r = pagos.pendiente(_orden(), HOY)
+    assert (r["grupo"], r["situacion"], r["a_pagar"]) == ("sin_fecha", "sin_fecha", 1000.0)
 
 
-def test_por_pagar_omite_liquidadas_y_ordena_por_vencimiento():
+def test_por_pagar_omite_liquidadas_y_ordena_por_fecha():
     res = pagos.por_pagar([
-        _orden("o1", fecha="2026-10-05"),
-        _orden("o2", fecha="2026-09-01"),
-        _orden("o3", fecha="2026-09-01", pagos=[{"monto": 1000}]),
+        _orden("o1", programados=_prog(("2026-11-05", 1000))),
+        _orden("o2", programados=_prog(("2026-10-01", 1000))),
+        _orden("o3", programados=_prog(("2026-10-01", 1000)), pagos=[{"monto": 1000}]),
         _orden("o4", tipo_pago="efectivo", estado="autorizada", total=250),
-        _orden("o5", fecha="2026-10-25", pagos=[{"monto": 400}]),
+        _orden("o5", programados=_prog(("2026-11-25", 1000)), pagos=[{"monto": 400}]),
+        _orden("o6"),
     ], HOY)
     assert [r["id"] for r in res["semana"]["ordenes"]] == ["o2", "o1", "o4"]
     assert res["semana"]["total"] == 2250.0 and res["semana"]["vencido"] == 1000.0
     assert [(r["id"], r["saldo"]) for r in res["despues"]["ordenes"]] == [("o5", 600.0)]
+    assert [r["id"] for r in res["sin_fecha"]["ordenes"]] == ["o6"]
 
 
 def test_historial_agrupa_por_movimiento():
@@ -107,9 +124,28 @@ def test_cuando_una_orden_recibe_pagos(tipo, estado, puede):
     assert (ordenes.motivo_sin_pago({"folio": 7, "tipo_pago": tipo, "estado": estado}) is None) is puede
 
 
-@pytest.mark.parametrize("dias, credito", [(30, True), (0, False), (None, False)])
-def test_da_credito_con_dias_pactados(dias, credito):
-    assert ordenes.da_credito({"dias_credito": dias}) is credito
+@pytest.mark.parametrize("proveedor, credito", [
+    ({"da_credito": True, "dias_credito": None}, True),
+    ({"da_credito": False, "dias_credito": 30}, False),   # la marca manda sobre el plazo viejo
+    ({"dias_credito": 30}, True),                         # antes de la fase 7
+    ({"dias_credito": None}, False),
+])
+def test_da_credito_segun_la_marca_del_proveedor(proveedor, credito):
+    assert ordenes.da_credito(proveedor) is credito
+
+
+def test_calendario_valida_fechas_y_montos():
+    c = ordenes.Calendario(programados=[{"fecha": "2026-11-20T00:00:00", "monto": 5651.87, "notas": " 1 de 2 "}])
+    assert (c.programados[0].fecha, c.programados[0].notas) == ("2026-11-20", "1 de 2")
+    assert ordenes.Calendario(programados=[]).programados == []
+    for malo in ({"fecha": "20/11/2026", "monto": 1}, {"fecha": "2026-11-20", "monto": 0}):
+        with pytest.raises(ValidationError):
+            ordenes.Calendario(programados=[malo])
+
+
+def test_cualquiera_puede_poner_fechas_de_pago():
+    roles = _roles_de(ordenes.router, "PUT", "/ordenes/{orden_id}/programados")
+    assert set(roles) == {"admin", "compras", "almacen", "pagos"}
 
 
 def _roles_de(router, metodo, ruta):
@@ -145,6 +181,7 @@ LLAVES = {
     "partidas": [("orden_id", "ordenes_compra", "c"), ("req_id", "requerimientos", "a"),
                  ("partida_origen_id", "partidas", "a")],
     "pagos": [("orden_id", "ordenes_compra", "c"), ("movimiento_id", "movimientos_pago", "c")],
+    "pagos_programados": [("orden_id", "ordenes_compra", "c")],
     "historial": [("orden_id", "ordenes_compra", "c")],
     "recolecciones": [("orden_id", "ordenes_compra", "c")],
     "notificaciones": [("orden_id", "ordenes_compra", "c")],

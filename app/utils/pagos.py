@@ -21,18 +21,29 @@ def fin_de_semana(hoy: date) -> date:
 
 def _proveedor(orden: dict) -> dict:
     prov = orden.get("proveedor") or {}
-    return {k: prov.get(k) for k in ("id", "nombre", "rfc", "cuenta_bancaria", "dias_credito")}
+    return {k: prov.get(k) for k in ("id", "nombre", "rfc", "cuenta_bancaria")}
 
 
 def pendiente(orden: dict, hoy: date) -> dict:
     """Renglón por pagar de una orden, a crédito o de contado.
 
     La de contado (autorizada, esperando su pago) urge siempre: sin el pago no
-    se compra. La de crédito urge si ya venció o vence antes del domingo.
+    se compra. La de crédito urge si tiene un pago programado vencido o que
+    cae antes del domingo; sin ninguna fecha queda aparte, para capturarla.
+    `a_pagar` es lo que toca ahora: lo de esta semana, o el siguiente pago.
     """
+    domingo = fin_de_semana(hoy).isoformat()
     a_credito = orden.get("tipo_pago") == "credito"
     if a_credito:
-        m = credito.movimiento(orden, (orden.get("proveedor") or {}).get("dias_credito"), hoy)
+        m = credito.movimiento(orden, hoy)
+        abiertas = [c for c in m["cuotas"] if c["pendiente"] > TOLERANCIA]
+        semana = [c for c in abiertas if c["fecha"] and c["fecha"] <= domingo]
+        if semana:
+            grupo, a_pagar = "semana", sum(c["pendiente"] for c in semana)
+        elif abiertas:
+            grupo, a_pagar = "despues", abiertas[0]["pendiente"]
+        else:
+            grupo, a_pagar = "sin_fecha", m["saldo"]
     else:
         pagos = orden.get("pagos") or []
         importe = round(float(orden.get("total") or 0), 2)
@@ -44,33 +55,34 @@ def pendiente(orden: dict, hoy: date) -> dict:
             "factura": ", ".join(f"{f.get('serie') or ''}{f.get('folio') or 's/f'}" for f in facturas) or None,
             "importe": importe, "pagado": pagado, "saldo": max(round(importe - pagado, 2), 0.0),
             "vencimiento": None, "dias": None, "situacion": "contado",
+            "vencido": 0.0, "recargo": 0.0, "sin_fecha": 0.0, "cuotas": [],
         }
+        grupo, a_pagar = "semana", m["saldo"]
 
-    urgente = (not a_credito) or m["situacion"] == "vencida" or (
-        m["vencimiento"] is not None and m["vencimiento"] <= fin_de_semana(hoy).isoformat()
-    )
     return {
-        **{k: m.get(k) for k in ("id", "folio", "fecha", "estado", "factura", "importe", "pagado",
-                                 "saldo", "vencimiento", "dias", "situacion")},
+        **{k: m.get(k) for k in ("id", "folio", "fecha", "estado", "factura", "importe", "recargo", "pagado",
+                                 "saldo", "vencido", "sin_fecha", "vencimiento", "dias", "situacion", "cuotas")},
+        "a_pagar": round(min(a_pagar, m["saldo"]), 2),
         "tipo": "credito" if a_credito else "contado",
         "tipo_pago": orden.get("tipo_pago"),
         "proveedor": _proveedor(orden),
-        "grupo": "semana" if urgente else "despues",
+        "grupo": grupo,
     }
 
 
 def por_pagar(ordenes: list[dict], hoy: date) -> dict:
-    """Separa lo que hay que pagar esta semana de lo que puede esperar."""
+    """Separa lo de esta semana, lo que puede esperar y lo que no tiene fecha."""
     renglones = [r for r in (pendiente(o, hoy) for o in ordenes) if r["saldo"] > TOLERANCIA]
-    # Primero lo vencido, luego por fecha de vencimiento; contado y sin plazo al final de su grupo.
+    # Primero lo vencido, luego por fecha; el contado (sin fecha) al final de su grupo.
     orden_de = lambda r: (r["vencimiento"] or "9999-12-31", r["folio"] or 0)
 
     def grupo(clave: str) -> dict:
         filas = sorted((r for r in renglones if r["grupo"] == clave), key=orden_de)
         return {
             "ordenes": filas,
-            "total": round(sum(r["saldo"] for r in filas), 2),
-            "vencido": round(sum(r["saldo"] for r in filas if r["situacion"] == "vencida"), 2),
+            "total": round(sum(r["a_pagar"] for r in filas), 2),
+            "saldo": round(sum(r["saldo"] for r in filas), 2),
+            "vencido": round(sum(r["vencido"] for r in filas), 2),
         }
 
     return {
@@ -78,6 +90,7 @@ def por_pagar(ordenes: list[dict], hoy: date) -> dict:
         "fin_semana": fin_de_semana(hoy).isoformat(),
         "semana": grupo("semana"),
         "despues": grupo("despues"),
+        "sin_fecha": grupo("sin_fecha"),
     }
 
 
