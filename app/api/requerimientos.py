@@ -72,6 +72,15 @@ class RequerimientoCreate(BaseModel):
         return _fecha_valida(v)
 
 
+class BorradoRequerimientos(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=500)
+
+    @field_validator("ids")
+    @classmethod
+    def _ids_validos(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(_uuid_valido(i) for i in v))
+
+
 class RequerimientoUpdate(BaseModel):
     descripcion: Optional[str] = None
     cantidad: Optional[float] = Field(default=None, gt=0)
@@ -179,6 +188,44 @@ def actualizar_requerimiento(
     if not res.data:
         raise HTTPException(status_code=404, detail="Requerimiento no encontrado")
     return res.data[0]
+
+
+@router.post("/borrar")
+def borrar_definitivo(
+    body: BorradoRequerimientos,
+    usuario = Depends(requiere_rol("admin")),
+):
+    """Borra requerimientos por completo (capturas de prueba o errores).
+
+    Uno que está en una orden activa no se borra aquí: se quita de la orden
+    editándola, o se borra la orden con sus requerimientos.
+    """
+    reqs = []
+    for i in range(0, len(body.ids), 50):
+        reqs += (
+            supabase.table("requerimientos")
+            .select("id, descripcion, estado, orden:orden_id(folio,estado)")
+            .in_("id", body.ids[i:i + 50])
+            .execute()
+        ).data or []
+
+    en_orden = [r for r in reqs if r["estado"] == "en_orden" and (r.get("orden") or {}).get("estado") != "rechazada"]
+    borrables = [r["id"] for r in reqs if r not in en_orden]
+    for i in range(0, len(borrables), 50):
+        lote = borrables[i:i + 50]
+        # Las partidas de órdenes canceladas aún los citan; se sueltan antes de borrar.
+        supabase.table("partidas").update({"req_id": None}).in_("req_id", lote).execute()
+        supabase.table("requerimientos").delete().in_("id", lote).execute()
+
+    if borrables:
+        print(f"[BORRADO] {usuario.get('nombre') or usuario['id']} borró {len(borrables)} requerimiento(s)")
+    return {
+        "borrados": len(borrables),
+        "omitidos": [
+            {"id": r["id"], "descripcion": r.get("descripcion"), "folio": (r.get("orden") or {}).get("folio")}
+            for r in en_orden
+        ],
+    }
 
 
 @router.delete("/{req_id}", status_code=204)

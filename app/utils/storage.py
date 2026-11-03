@@ -103,3 +103,12 @@ def borrar(ruta: str) -> None:
         supabase.storage.from_(BUCKET).remove([ruta])
     except Exception:
         pass
+
+
+def borrar_varios(rutas: list[str]) -> None:
+    """Borra varios binarios de una vez; igual que borrar(), no interrumpe si falla."""
+    for i in range(0, len(rutas), 100):
+        try:
+            supabase.storage.from_(BUCKET).remove(rutas[i:i + 100])
+        except Exception as e:
+            print(f"[STORAGE] no se pudieron borrar {len(rutas[i:i + 100])} archivos: {e}")

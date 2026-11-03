@@ -13,7 +13,7 @@ from app.database import supabase, una_fila
 from app.auth import usuario_actual, requiere_rol
 from app.roles import ROLES_ADMIN, ROLES_OPERACION, ROLES_CONTABILIDAD, ROLES_TODOS
 from app.utils.pdf import generar_pdf_orden
-from app.utils import ajustes, notificaciones
+from app.utils import ajustes, notificaciones, storage
 from app.utils.bandeja import falta_tabla
 from app.api import precios
 
@@ -147,8 +147,8 @@ class EstadoUpdate(BaseModel):
         return _texto_opcional(v)
 
 
-class PagoCreate(BaseModel):
-    """Pago a proveedor o entrega de recursos a quien hará la compra.
+class DatosPago(BaseModel):
+    """Cómo se pagó: lo común a un pago de una orden y a uno de varias.
 
     - transferencia: exige referencia.
     - efectivo / tarjeta: exige a quién se le entregó.
@@ -156,7 +156,6 @@ class PagoCreate(BaseModel):
     """
     fecha_pago: str
     metodo: str
-    monto: float = Field(gt=0)
     referencia: Optional[str] = None
     entregado_a: Optional[str] = None
     comprobante_url: Optional[str] = None
@@ -183,6 +182,21 @@ class PagoCreate(BaseModel):
         if self.metodo in METODOS_CON_ENTREGA and not self.entregado_a:
             raise ValueError("indica a quién se le entregó el efectivo o la tarjeta")
         return self
+
+
+class PagoCreate(DatosPago):
+    """Pago a proveedor o entrega de recursos para una sola orden."""
+    monto: float = Field(gt=0)
+
+
+class BorradoOrdenes(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=200)
+    con_requerimientos: bool = False
+
+    @field_validator("ids")
+    @classmethod
+    def _ids_validos(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(_uuid_valido(i) for i in v))
 
 
 class RecoleccionCreate(BaseModel):
@@ -212,6 +226,48 @@ def registrar_evento(orden_id: str, evento: str, detalle: str = None, usuario_id
         "detalle": detalle,
         "usuario_id": usuario_id,
     }).execute()
+
+
+def da_credito(proveedor: Optional[dict]) -> bool:
+    """Un proveedor da crédito si tiene días de crédito pactados (más de cero)."""
+    return bool((proveedor or {}).get("dias_credito"))
+
+
+# Estados en que una orden recibe pagos: la de crédito en cuanto se autoriza
+# y hasta después de cerrada; la de contado hasta su comprobación.
+ESTADOS_PAGO_CREDITO = ("autorizada", "recoleccion", "comprobacion", "cerrada")
+ESTADOS_PAGO_CONTADO = ("autorizada", "pagada", "recoleccion", "comprobacion")
+
+
+def motivo_sin_pago(orden: dict) -> Optional[str]:
+    """Por qué la orden no puede recibir un pago (None si sí puede)."""
+    if orden["tipo_pago"] == "credito":
+        if orden["estado"] not in ESTADOS_PAGO_CREDITO:
+            return f"La orden #{orden.get('folio')} aún no está autorizada"
+    elif orden["estado"] not in ESTADOS_PAGO_CONTADO:
+        return f"La orden #{orden.get('folio')} no está autorizada: solo se pagan órdenes autorizadas"
+    return None
+
+
+def despues_del_pago(orden: dict, pago: dict, usuario_id: str, nota: Optional[str] = None) -> None:
+    """Avanza la orden de contado a pagada y deja el pago en su historial."""
+    a_credito = orden["tipo_pago"] == "credito"
+    if orden["estado"] == "autorizada" and not a_credito:
+        # La forma real de pago la decide contabilidad al procesarlo.
+        supabase.table("ordenes_compra").update(
+            {"estado": "pagada", "tipo_pago": pago["metodo"]}
+        ).eq("id", orden["id"]).execute()
+
+    monto = float(pago["monto"])
+    if pago["metodo"] in METODOS_CON_ENTREGA:
+        evento = f"Recursos entregados a {pago.get('entregado_a')}"
+        detalle = f"{pago['metodo']} · ${monto:,.2f}" + (f" · {pago['referencia']}" if pago.get("referencia") else "")
+    else:
+        evento = "Pago a crédito registrado" if a_credito else "Pago registrado"
+        detalle = f"Ref: {pago.get('referencia')} · {pago['metodo']} · ${monto:,.2f}"
+    if nota:
+        detalle += f" · {nota}"
+    registrar_evento(orden["id"], evento, detalle=detalle, usuario_id=usuario_id)
 
 
 def _orden_minima(orden_id: str, campos: str = "id, folio, estado, tipo_pago, total, creado_por") -> dict:
@@ -373,7 +429,7 @@ def crear_orden(
 ):
     proveedor = una_fila(
         supabase.table("proveedores")
-        .select("id, activo")
+        .select("id, activo, dias_credito")
         .eq("id", orden.proveedor_id)
     )
     if not proveedor:
@@ -381,10 +437,13 @@ def crear_orden(
     if not proveedor.get("activo"):
         raise HTTPException(status_code=400, detail="El proveedor está desactivado")
 
+    # Con quien nos da crédito la orden nace a crédito: no espera un pago
+    # previo y su saldo se lleva en Crédito y en Pagos.
+    a_credito = da_credito(proveedor)
     orden_data = {
         "proveedor_id":  orden.proveedor_id,
         "creado_por":    usuario["id"],
-        "tipo_pago":     orden.tipo_pago,
+        "tipo_pago":     "credito" if a_credito else orden.tipo_pago,
         "observaciones": orden.observaciones,
         "estado":        "borrador",
     }
@@ -422,7 +481,9 @@ def crear_orden(
             "orden_id": orden_id,
         }).in_("id", req_ids).execute()
 
-    registrar_evento(orden_id, "Orden creada", usuario_id=usuario["id"])
+    registrar_evento(orden_id, "Orden creada",
+                     detalle=f"A crédito ({proveedor['dias_credito']} días)" if a_credito else None,
+                     usuario_id=usuario["id"])
     return obtener_orden(orden_id, usuario)
 
 
@@ -529,15 +590,10 @@ def registrar_pago(
     usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD)),
 ):
     orden = _orden_minima(orden_id)
-    estado = orden["estado"]
-    a_credito = orden["tipo_pago"] == "credito"
-
-    if a_credito:
-        # La compra a crédito no espera el pago: se liquida cuando toque.
-        if estado not in ("autorizada", "recoleccion", "comprobacion", "cerrada"):
-            raise HTTPException(status_code=409, detail="La orden aún no está autorizada")
-    elif estado not in ("autorizada", "pagada", "recoleccion", "comprobacion"):
-        raise HTTPException(status_code=409, detail="Solo se registra el pago de órdenes autorizadas")
+    # La compra a crédito no espera el pago: se liquida cuando toque.
+    motivo = motivo_sin_pago(orden)
+    if motivo:
+        raise HTTPException(status_code=409, detail=motivo)
 
     datos = pago.model_dump()
     datos["orden_id"]       = orden_id
@@ -547,19 +603,7 @@ def registrar_pago(
     if not res.data:
         raise HTTPException(status_code=400, detail="No se pudo registrar el pago")
 
-    if estado == "autorizada" and not a_credito:
-        # La forma real de pago la decide contabilidad al procesarlo.
-        supabase.table("ordenes_compra").update(
-            {"estado": "pagada", "tipo_pago": pago.metodo}
-        ).eq("id", orden_id).execute()
-
-    if pago.metodo in METODOS_CON_ENTREGA:
-        evento = f"Recursos entregados a {pago.entregado_a}"
-        detalle = f"{pago.metodo} · ${pago.monto:,.2f}" + (f" · {pago.referencia}" if pago.referencia else "")
-    else:
-        evento = "Pago a crédito registrado" if a_credito else "Pago registrado"
-        detalle = f"Ref: {pago.referencia} · {pago.metodo} · ${pago.monto:,.2f}"
-    registrar_evento(orden_id, evento, detalle=detalle, usuario_id=usuario["id"])
+    despues_del_pago(orden, datos, usuario["id"])
     return res.data[0]
 
 
@@ -702,3 +746,122 @@ def eliminar_orden(
     ).eq("id", orden_id).execute()
     _liberar_requerimientos(orden_id)
     registrar_evento(orden_id, "Orden eliminada", usuario_id=usuario["id"])
+
+
+# ── Borrado definitivo (solo admin) ──────────────────────────────────────
+
+def _lotes(valores, n: int = 50):
+    """Trozos para filtros in_(): una URL de PostgREST con cientos de ids falla."""
+    valores = list(valores)
+    for i in range(0, len(valores), n):
+        yield valores[i:i + n]
+
+
+def _filas(tabla: str, campos: str, columna: str, valores) -> list[dict]:
+    filas = []
+    for lote in _lotes(valores):
+        filas += supabase.table(tabla).select(campos).in_(columna, lote).execute().data or []
+    return filas
+
+
+def _reubicar_requerimientos(req_ids: set, borradas: set) -> int:
+    """Los requerimientos de las órdenes borradas pasan a la orden viva que
+    todavía los surte (un complemento) o vuelven a pendientes.
+
+    Devuelve cuántos volvieron a pendientes.
+    """
+    liberados = 0
+    for req in _filas("requerimientos", "id, estado, orden_id", "id", req_ids):
+        if req["estado"] == "cancelado":
+            if req.get("orden_id") in borradas:
+                supabase.table("requerimientos").update({"orden_id": None}).eq("id", req["id"]).execute()
+            continue
+        vivas = (
+            supabase.table("partidas").select("orden:orden_id(id,estado)").eq("req_id", req["id"]).execute()
+        ).data or []
+        destino = next((
+            o["id"] for o in ((p.get("orden") or {}) for p in vivas)
+            if o.get("id") and o["id"] not in borradas and o.get("estado") != "rechazada"
+        ), None)
+        if destino:
+            datos = {"estado": "en_orden", "orden_id": destino}
+        else:
+            datos = {"estado": "pendiente", "orden_id": None}
+            liberados += 1
+        supabase.table("requerimientos").update(datos).eq("id", req["id"]).execute()
+    return liberados
+
+
+@router.post("/borrar")
+def borrar_definitivo(
+    body: BorradoOrdenes,
+    usuario=Depends(requiere_rol("admin")),
+):
+    """Borra las órdenes por completo, para limpiar capturas de prueba o errores.
+
+    Se van sus partidas, pagos, logística, historial, avisos y documentos.
+    Las facturas no se borran: quedan sin vincular. Los requerimientos vuelven
+    a pendientes, salvo que se pida borrarlos también.
+    """
+    ordenes = _filas("ordenes_compra", "id, folio", "id", body.ids)
+    if not ordenes:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    ids = [o["id"] for o in ordenes]
+    borradas = set(ids)
+
+    partidas = _filas("partidas", "id, req_id", "orden_id", ids)
+    req_ids = {p["req_id"] for p in partidas if p.get("req_id")} | {
+        r["id"] for r in _filas("requerimientos", "id", "orden_id", ids)
+    }
+    adjuntos = _filas("adjuntos", "id, ruta", "orden_id", ids)
+    movimientos = {p.get("movimiento_id") for p in _filas("pagos", "*", "orden_id", ids)} - {None}
+
+    # Primero se suelta todo lo que apunta a estas órdenes sin borrarse con ellas.
+    for lote in _lotes([p["id"] for p in partidas]):
+        supabase.table("partidas").update({"partida_origen_id": None}).in_("partida_origen_id", lote).execute()
+    desvinculadas = 0
+    for lote in _lotes(ids):
+        supabase.table("ordenes_compra").update({"orden_origen_id": None}).in_("orden_origen_id", lote).execute()
+        res = supabase.table("facturas").update(
+            {"orden_id": None, "vinculacion": "pendiente"}
+        ).in_("orden_id", lote).execute()
+        desvinculadas += len(res.data or [])
+        supabase.table("adjuntos").delete().in_("orden_id", lote).execute()
+
+    liberados = 0
+    if body.con_requerimientos:
+        for lote in _lotes(ids):
+            supabase.table("requerimientos").update({"orden_id": None}).in_("orden_id", lote).execute()
+    else:
+        liberados = _reubicar_requerimientos(req_ids, borradas)
+
+    # Partidas, pagos, logística, historial y avisos se borran en cascada.
+    for lote in _lotes(ids):
+        supabase.table("ordenes_compra").delete().in_("id", lote).execute()
+
+    borrados_req = 0
+    if body.con_requerimientos and req_ids:
+        for lote in _lotes(req_ids):
+            supabase.table("partidas").update({"req_id": None}).in_("req_id", lote).execute()
+            res = supabase.table("requerimientos").delete().in_("id", lote).execute()
+            borrados_req += len(res.data or [])
+
+    # Un pago de varias órdenes que se quedó sin ninguna desaparece también.
+    if movimientos:
+        quedan = {p["movimiento_id"] for p in _filas("pagos", "movimiento_id", "movimiento_id", movimientos)}
+        for lote in _lotes(movimientos - quedan):
+            supabase.table("movimientos_pago").delete().in_("id", lote).execute()
+
+    storage.borrar_varios([a["ruta"] for a in adjuntos if a.get("ruta")])
+
+    folios = sorted(o["folio"] for o in ordenes if o.get("folio") is not None)
+    print(f"[BORRADO] {usuario.get('nombre') or usuario['id']} borró las órdenes {folios}"
+          f" (requerimientos {'borrados' if body.con_requerimientos else 'liberados'})")
+    return {
+        "borradas": len(ids),
+        "folios": folios,
+        "requerimientos_borrados": borrados_req,
+        "requerimientos_liberados": liberados,
+        "facturas_desvinculadas": desvinculadas,
+        "documentos_borrados": len(adjuntos),
+    }
