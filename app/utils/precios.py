@@ -171,6 +171,70 @@ class IndiceTextos:
         return mas_parecidos(texto, [self.candidatos[n] for n in indices], self.campo, minimo, limite)
 
 
+# ── Código del proveedor ──────────────────────────────
+# El CFDI trae el código interno del proveedor (NoIdentificacion). Cuando un
+# proveedor cambia cómo describe un artículo («EMPLAYE CN4» → «PELICULA
+# ESTIRABLE 18 CN4») el código suele quedarse igual. No se clasifica solo por
+# código porque algunos proveedores lo reutilizan para cosas distintas: solo se
+# sugiere y alguien confirma.
+
+CODIGOS_GENERICOS = {"N/A", "S/N", "SN", "NA", "SIN", "NINGUNO", "GENERICO", "VARIOS", "NO APLICA", "NOAPLICA"}
+
+
+def codigo_util(codigo: Optional[str]) -> bool:
+    """¿El código distingue un artículo? 000, 1, S/N y similares no."""
+    c = " ".join((codigo or "").upper().split())
+    if len(c) < 3 or c in CODIGOS_GENERICOS or not re.search(r"[A-Z0-9]", c):
+        return False
+    if re.fullmatch(r"(.)\1*", c) or (c.isdigit() and int(c) < 1000):
+        return False
+    return True
+
+
+def llave_codigo(fila: dict) -> Optional[tuple]:
+    """(RFC del emisor, código del proveedor) de un renglón, si el código sirve."""
+    codigo = fila.get("no_identificacion")
+    rfc = (fila.get("rfc_emisor") or "").upper().strip()
+    if not rfc or not codigo_util(codigo):
+        return None
+    return (rfc, codigo.strip())
+
+
+def insumo_por_codigo(llaves: set, insumos_por_llave: dict) -> Optional[dict]:
+    """El insumo al que apuntan los códigos de un texto, si es uno solo.
+
+    Un código que el proveedor ya usó para dos insumos no dice nada.
+    """
+    candidatos: dict[str, str] = {}
+    for llave in sorted(llaves):
+        insumos = insumos_por_llave.get(llave) or set()
+        if len(insumos) == 1:
+            candidatos.setdefault(next(iter(insumos)), llave[1])
+    if len(candidatos) != 1:
+        return None
+    insumo_id, codigo = next(iter(candidatos.items()))
+    return {"insumo_id": insumo_id, "codigo": codigo}
+
+
+def agrupar_mismo_codigo(filas: list[dict], llaves: set, nombres: dict = None) -> list[dict]:
+    """Textos sin clasificar facturados con alguno de esos códigos, del más reciente al más viejo."""
+    nombres = nombres or {}
+    grupos: dict[str, dict] = {}
+    for f in sorted(filas, key=lambda f: _fecha(f.get("fecha")) or date.min):
+        llave = llave_codigo(f)
+        if llave not in llaves:
+            continue
+        g = grupos.setdefault(f["texto_norm"], {
+            "texto_norm": f["texto_norm"], "codigo": llave[1], "compras": 0,
+            "proveedor": nombres.get(llave[0]) or f.get("nombre_emisor") or llave[0],
+        })
+        g["compras"] += 1
+        g["ultima"] = str(_fecha(f.get("fecha")))
+        g["ultimo_precio"] = round(float(f.get("precio_unitario") or 0), 4)
+        g["unidad"] = f.get("unidad")
+    return sorted(grupos.values(), key=lambda g: g["ultima"], reverse=True)
+
+
 def nombre_sugerido(descripcion: str) -> str:
     """Nombre legible para un insumo nuevo a partir de la descripción."""
     limpio = " ".join((descripcion or "").split())[:120]

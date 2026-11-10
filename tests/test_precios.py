@@ -204,6 +204,40 @@ def test_rfc_de_la_empresa_es_el_mas_frecuente():
     assert precios.rfc_empresa_probable(xmls) == "EMPRESA"
 
 
+# ── Código del proveedor ──────────────────────────────
+
+@pytest.mark.parametrize("codigo, util", [
+    ("PC1000DAN", True), ("0203338", True), ("CN4 MQ", True), ("CIN-1810", True),
+    ("000", False), ("001", False), ("1", False), ("S/N", False), ("XXX", False), ("", False), (None, False),
+])
+def test_codigo_util(codigo, util):
+    assert precios.codigo_util(codigo) is util
+
+
+def test_insumo_por_codigo_solo_si_apunta_a_uno():
+    llaves = {("CAVY891115HI7", "PC1000DAN")}
+    assert precios.insumo_por_codigo(llaves, {("CAVY891115HI7", "PC1000DAN"): {"emplaye"}}) == \
+        {"insumo_id": "emplaye", "codigo": "PC1000DAN"}
+    # El proveedor usó el código para dos insumos: no sirve.
+    assert precios.insumo_por_codigo(llaves, {("CAVY891115HI7", "PC1000DAN"): {"a", "b"}}) is None
+    # El mismo código de otro proveedor es otra cosa.
+    assert precios.insumo_por_codigo(llaves, {("OTRO", "PC1000DAN"): {"emplaye"}}) is None
+
+
+def test_agrupar_mismo_codigo_por_texto():
+    filas = [
+        {"texto_norm": "PELICULA ESTIRABLE 18 CN4", "rfc_emisor": "cavy891115hi7", "no_identificacion": "PC1000DAN",
+         "fecha": "2026-04-10", "precio_unitario": "115", "unidad": "PZA"},
+        {"texto_norm": "PELICULA ESTIRABLE 18 CN4", "rfc_emisor": "CAVY891115HI7", "no_identificacion": "PC1000DAN",
+         "fecha": "2026-10-29", "precio_unitario": "130", "unidad": "PZA"},
+        {"texto_norm": "OTRA COSA", "rfc_emisor": "OTRO", "no_identificacion": "PC1000DAN",
+         "fecha": "2026-10-29", "precio_unitario": "5", "unidad": "PZA"},
+    ]
+    (g,) = precios.agrupar_mismo_codigo(filas, {("CAVY891115HI7", "PC1000DAN")}, {"CAVY891115HI7": "Yamily"})
+    assert g == {"texto_norm": "PELICULA ESTIRABLE 18 CN4", "codigo": "PC1000DAN", "compras": 2,
+                 "proveedor": "Yamily", "ultima": "2026-10-29", "ultimo_precio": 130.0, "unidad": "PZA"}
+
+
 # ── Permisos ──────────────────────────────────────────
 
 def _roles(path, metodo):

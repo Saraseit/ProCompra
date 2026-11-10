@@ -48,7 +48,7 @@ COLUMNAS_ARTICULO = (
     "proveedores,ultimo_proveedor,primera,ultima,ultimo_precio,mediana,gastado,busqueda"
 )
 SELECT_CONCEPTO = (
-    "id,fecha,precio_unitario,cantidad,unidad,descripcion,texto_norm,rfc_emisor,nombre_emisor,"
+    "id,fecha,precio_unitario,cantidad,unidad,descripcion,texto_norm,rfc_emisor,nombre_emisor,no_identificacion,"
     "factura:factura_id(id,serie,folio,uuid_fiscal,historica,orden:orden_id(id,folio))"
 )
 SELECT_PARTIDA = (
@@ -230,6 +230,58 @@ def _puntos(conceptos: list[dict], nombres: dict = None) -> list[dict]:
             "orden_id":    orden.get("id"),
         })
     return puntos
+
+
+SELECT_CODIGO = "texto_norm,rfc_emisor,nombre_emisor,no_identificacion,fecha,precio_unitario,unidad"
+
+
+def _por_codigos(codigos: set, clasificados: bool, columnas: str = SELECT_CODIGO) -> list[dict]:
+    """Renglones facturados con alguno de esos códigos de proveedor."""
+    filas = []
+    for lote in _en_lotes(sorted(codigos)):
+        def consulta(lote=lote):
+            q = supabase.table("factura_conceptos").select(columnas).in_("no_identificacion", lote)
+            q = q.not_.is_("insumo_id", "null") if clasificados else q.is_("insumo_id", "null").eq("ignorado", False)
+            return q.order("id")
+        filas += _todas(consulta)
+    return filas
+
+
+def _mismo_codigo(conceptos: list[dict], nombres: dict) -> list[dict]:
+    """Textos sin clasificar que el mismo proveedor factura con el código de este insumo.
+
+    Si el proveedor cambió la descripción, sus compras nuevas quedan fuera del
+    insumo y la gráfica se queda en el precio viejo: aquí se avisa.
+    """
+    llaves = {k for c in conceptos if (k := precios.llave_codigo(c))}
+    if not llaves:
+        return []
+    filas = _por_codigos({cod for _, cod in llaves}, clasificados=False)
+    return precios.agrupar_mismo_codigo(filas, llaves, nombres)
+
+
+def _sugerencias_por_codigo(textos: list[str]) -> dict[str, dict]:
+    """texto → insumo que el mismo proveedor ya factura con el mismo código."""
+    llaves_por_texto: dict[str, set] = {}
+    for lote in _en_lotes(textos):
+        for f in _todas(lambda lote=lote: supabase.table("factura_conceptos")
+                        .select("texto_norm,rfc_emisor,no_identificacion").in_("texto_norm", lote)
+                        .is_("insumo_id", "null").eq("ignorado", False).order("id")):
+            if (k := precios.llave_codigo(f)):
+                llaves_por_texto.setdefault(f["texto_norm"], set()).add(k)
+    codigos = {cod for llaves in llaves_por_texto.values() for _, cod in llaves}
+    if not codigos:
+        return {}
+    insumos_por_llave: dict[tuple, set] = {}
+    for f in _por_codigos(codigos, clasificados=True, columnas="rfc_emisor,no_identificacion,insumo_id"):
+        if (k := precios.llave_codigo(f)):
+            insumos_por_llave.setdefault(k, set()).add(f["insumo_id"])
+    resultado = {}
+    for texto, llaves in llaves_por_texto.items():
+        r = precios.insumo_por_codigo(llaves, insumos_por_llave)
+        if r:
+            resultado[texto] = r
+    return resultado
 
 
 def estadisticas_de(art: dict, cat: dict = None) -> dict:
@@ -484,7 +536,8 @@ def articulo(clave: str = Query(..., min_length=3, max_length=220),
     cat = _catalogo()
     art = _clave_valida(clave, cat)
     nombres = _nombres_proveedor()
-    puntos = _puntos(_conceptos_de(art), nombres)
+    conceptos = _conceptos_de(art)
+    puntos = _puntos(conceptos, nombres)
     stats = precios.estadisticas(puntos, date.today(), art.get("unidad"))
     cat["stats"][art["clave"]] = stats
 
@@ -511,6 +564,7 @@ def articulo(clave: str = Query(..., min_length=3, max_length=220),
         "stats":     stats,
         "facturado": puntos,
         "cotizado":  cotizado,
+        "mismo_codigo": _mismo_codigo(conceptos, nombres) if art["insumo_id"] else [],
         "umbral":    {"alto": precios.UMBRAL_ALTO, "bajo": precios.UMBRAL_BAJO},
     }
 
@@ -546,8 +600,16 @@ def por_clasificar(
     grupos = sorted(_filtrar([a for a in cat["articulos"] if not a["insumo_id"]], q),
                     key=lambda a: (-(a["compras"] or 0), a["texto_norm"]))
     pagina = []
+    por_codigo = _sugerencias_por_codigo([g["texto_norm"] for g in grupos[offset:offset + limite]])
     for g in grupos[offset:offset + limite]:
         sugerencias, vistos = [], set()
+        # Mismo código del proveedor que un insumo ya clasificado: va primero.
+        c = por_codigo.get(g["texto_norm"])
+        i = cat["insumos"].get(c["insumo_id"]) if c else None
+        if i:
+            vistos.add(i["id"])
+            sugerencias.append({"insumo_id": i["id"], "nombre": i["nombre"], "unidad": i["unidad"],
+                                "parecido": precios.similitud(g["texto_norm"], i["nombre"]), "codigo": c["codigo"]})
         for s in cat["indice_catalogo"].buscar(g["texto_norm"], limite=6):
             if s["insumo_id"] in vistos:
                 continue
