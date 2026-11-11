@@ -42,46 +42,92 @@ CUENTAS = [
 
 # (codigo, plantilla, descripcion)
 PLANTILLAS = [
-    ("GENERAL", "{VERBO} DE {CONCEPTO}", "La que se usa si ninguna regla pide otra"),
+    ("GENERAL", "{VERBO} DE {CONCEPTO}", "La que se usa si ninguna regla pide otra: COMPRA DE para bienes"),
+    ("PAGO_GENERAL", "PAGO DE {CONCEPTO}[ A {PROVEEDOR}]", "Servicios, rentas, fabricación, permisos"),
     ("CON_PROVEEDOR", "{VERBO} DE {CONCEPTO}[ A {PROVEEDOR}]", "Agrega el proveedor al final"),
     ("TCB", "COMPRA DE {CONCEPTO}", "Tarjeta de compras"),
-    ("LAVANDERIA", "PAGO DE LAVANDERIA DE {ITEMS} A {PROVEEDOR}", "Cantidades y conceptos de la remisión"),
-    ("SUBRENTA", "PAGO DE SUBRENTA DE {ITEMS} A {PROVEEDOR}", "Subrentas (C06)"),
-    ("DEPTO360", "PAGO DE {CONCEPTO} A {PROVEEDOR}[ {DOC}]", "Departamento 360; DOC es la serie y folio de la factura"),
-    ("FLETE", "PAGO DE FLETE {CONCEPTO} A {PROVEEDOR}", "Fletes programados"),
+    ("LAVANDERIA", "PAGO DE LAVANDERIA DE {ITEMS}[ A {PROVEEDOR}]", "Cantidades y conceptos de la remisión"),
+    ("SUBRENTA", "PAGO DE SUBRENTA DE {ITEMS}[ A {PROVEEDOR}]", "Subrentas (C06)"),
+    ("DEPTO360", "PAGO DE {CONCEPTO}[ A {PROVEEDOR}][ {DOC}]", "Departamento 360; DOC es la serie y folio de la factura"),
+    ("FLETE", "PAGO DE FLETE {CONCEPTO}[ A {PROVEEDOR}]", "Fletes programados"),
     ("REEMBOLSO", "REEMBOLSO A {PROVEEDOR} POR {CONCEPTO}", "En pagos sin orden, PROVEEDOR es la persona"),
     ("CAJA_CUN", "COMPRA DE {CONCEPTO}[ EN {PROVEEDOR}]", "Tickets del fondo de Cancún"),
     ("MYD_CUN", "PAGO {CONCEPTO}", "Montaje y desmontaje en Cancún: «MYD 2 PAX EVENTO …»"),
 ]
 
-# (nombre, prioridad, palabras, palabras_excluir, cuenta, categoria, plantilla, extras)
+def _r(nombre, prioridad, palabras, cuenta=None, categoria=None, plantilla=None, excluir=(), **extras):
+    return {"nombre": nombre, "prioridad": prioridad, "palabras": list(palabras), "palabras_excluir": list(excluir),
+            "cuenta": cuenta, "categoria": categoria, "plantilla": plantilla, **extras}
+
+
+# Reglas de cuenta por concepto (reglas de registro ERP, sección 8). La cuenta
+# que se elija en el pago siempre manda; esto solo la propone.
 REGLAS = [
-    ("Subrentas", 10, ["SUBRENTA", "RENTA DE PISTA"], [], "C06", None, "SUBRENTA", {}),
-    ("Retiro de utilidad", 10, ["RETIRO DE UTILIDAD", "REPARTO DE UTILIDAD"], [], "E09", None, None, {}),
-    ("Montaje y desmontaje", 10, ["MYD", "PAX", "MONTAJE", "DESMONTAJE"], [], "A12", None, "MYD_CUN", {}),
-    ("Fletes", 10, ["FLETE", "FLETES"], [], "A03", "#LOG", "FLETE", {}),
-    ("Lavandería", 10, ["LAVANDERIA", "LAVADO"], [], "D03", "LAVADO", "LAVANDERIA", {}),
-    ("Tickets de Cancún sin factura", 15, [], [], None, None, None,
-     {"plaza": "CUN", "con_cfdi": False, "fuerza_nd": True}),
-    ("Gastos de oficina", 15, ["GARRAFON", "GARRAFONES", "PAPELERIA", "TONER", "LIMPIEZA"], [], "F03", None, None, {}),
-    ("Telas", 20, ["TELA", "TELAS", "TERGAL", "TAFETAN", "MANTA", "BOMBAY", "MAGALY", "LICRA"], ["SERVILLETA", "SERVILLETAS"],
-     "A09.1", "TELA", None, {}),
-    ("Pintura", 20, ["PINTURA", "THINNER", "TINTA", "MANCHADOR", "BERELINTE"], [], "A09.1", "PINTURA", None, {}),
-    ("Flores", 20, ["FLOR", "FLORES", "ESPUMA FLORAL", "OASIS"], [], "B02", None, None, {}),
-    ("Hidratación y alimentos en servicio", 20, ["HIELO", "AGUA", "HIDRATACION", "REFRESCO", "REFRESCOS", "ALIMENTO", "ALIMENTOS", "COMIDA"],
-     ["GARRAFON", "GARRAFONES"], "A11.2", None, None, {}),
-    ("Insumos de preparación", 30, ["HILO", "LISTON", "SILICON", "TORNILLO", "TORNILLOS", "TORNILLERIA", "MASKING", "ESTOPA",
-                                    "CONTACTO", "CONTACTOS", "SOPORTE", "SOPORTES"], [], "A09.2", None, None, {}),
-    ("Traslados, casetas y combustible", 30, ["UBER", "DIDI", "CASETA", "CASETAS", "GASOLINA", "COMBUSTIBLE"], [], "A10", None, None, {}),
-    ("Producción tercerizada", 30, ["VINIL", "HERRERIA", "CARPINTERIA", "TORRE", "TORRES", "ESTRUCTURA", "ESTRUCTURAS", "FABRICACION"],
-     [], "B01", None, None, {}),
-    ("Servicios públicos", 40, ["TELEFONO", "TELMEX", "TELCEL", "INTERNET", "CFE", "ENERGIA ELECTRICA", "BASURA"], [], "F02", None, None, {}),
-    ("Personal", 40, ["FESTEJO", "PREMIO", "PREMIOS", "UNIFORME", "UNIFORMES"], [], "E06", None, None, {}),
-    ("Marketing", 40, ["OBSEQUIO", "OBSEQUIOS", "HOSTING", "SUSCRIPCION"], [], "C03", None, None, {}),
-    ("Permisos de unidades", 40, ["PERMISO", "PERMISOS", "BOB"], [], "F04", None, None, {}),
-    ("Mantenimiento de unidades", 40, ["FRENOS", "AFINACION", "LLANTA", "LLANTAS"], [], "A06", None, None, {}),
-    ("Renta de unidades", 40, ["RENTA DE CAMIONETA", "RENTA DE UNIDAD", "RENTA DE CAMION"], [], "A07", None, None, {}),
-    ("Mermas", 50, ["MERMA", "MERMAS", "PERDIDA"], [], "A02", None, None, {}),
+    _r("Mermas y reposiciones a proveedores", 8, ["MERMA", "MERMAS", "PERDIDA", "REPOSICION", "REPOSICION DE FUNDAS"], "A02",
+       plantilla="PAGO_GENERAL"),
+    _r("Renta de unidades", 8, ["RENTA DE CAMIONETA", "RENTA DE UNIDAD", "RENTA DE CAMION", "CAMIONETA ESTACA", "HILUX"], "A07",
+       plantilla="PAGO_GENERAL", excluir=["GASOLINA", "COMBUSTIBLE"]),
+    _r("Subrentas", 10, ["SUBRENTA", "RENTA DE"], "C06", plantilla="SUBRENTA"),
+    _r("Retiro de utilidad", 10, ["RETIRO DE UTILIDAD", "REPARTO DE UTILIDAD"], "E09"),
+    _r("Montaje y desmontaje", 10, ["MYD", "PAX", "MONTAJE", "DESMONTAJE"], "A12", plantilla="MYD_CUN"),
+    _r("Fletes", 10, ["FLETE", "FLETES"], "A03", "#LOG", "FLETE"),
+    _r("Lavandería", 10, ["LAVANDERIA", "LAVADO"], "D03", "LAVADO", "LAVANDERIA"),
+    _r("Intereses y cargos financieros", 10, ["INTERES", "INTERESES", "FLEX PRICING", "PAGO EXTEMPORANEO"], "I04",
+       plantilla="PAGO_GENERAL"),
+    _r("Florista y limpieza de flores", 12, ["AUXILIAR FLORISTA", "FLORISTA", "LIMPIEZA DE FLORES"], "B02", plantilla="PAGO_GENERAL"),
+    _r("Herramientas mayores y lámparas de bodega", 14, ["LIJADORA", "TALADRO", "DESTORNILLADOR DE IMPACTO",
+                                                         "INSTALACION DE LAMPARAS", "CAMBIO DE LAMPARAS"], "G02"),
+    _r("Instalaciones en inmueble", 14, ["CLIMA", "MINISPLIT", "AIRE ACONDICIONADO"], "G05", plantilla="PAGO_GENERAL"),
+    _r("Mobiliario y equipo de oficina", 14, ["REFLECTOR", "REFLECTORES"], "F06"),
+    _r("Tickets de Cancún sin factura", 15, [], plaza="CUN", con_cfdi=False, fuerza_nd=True),
+    _r("Gastos de oficina", 15, ["GARRAFON", "GARRAFONES", "PAPELERIA", "TONER", "JARDINERIA", "PASTO", "GOTERA", "GOTERAS",
+                                 "LIMPIEZA", "SUSCRIPCION CLAUDE", "CLAUDE AI"], "F03"),
+    _r("Personal y RRHH", 16, ["CUMPLEANOS", "FESTEJO", "FESTEJOS", "PIBES", "PREMIO", "PREMIOS", "SERIGRAFIA", "PLAYERAS",
+                               "UNIFORME", "UNIFORMES", "COMEDOR", "PERCOLADORA", "REEMBOLSO MEDICO"], "E06"),
+    _r("Marketing", 16, ["OBSEQUIO", "OBSEQUIOS", "DULCES PARA CLIENTE", "PASTEL PARA CLIENTE", "CONGRESO", "FOLLETO", "FOLLETOS",
+                         "TARJETAS DE PRESENTACION", "HOSTING", "SUSCRIPCION", "FAM TRIP"], "C03"),
+    _r("Viáticos de dirección", 18, ["TREN MAYA", "HOSPEDAJE", "VUELO", "VUELOS", "VIATICOS"], "F05", plantilla="PAGO_GENERAL",
+       excluir=["FAM TRIP"]),
+    _r("Telas", 20, ["TELA", "TELAS", "TERGAL", "TAFETAN", "MANTA", "BOMBAY", "MAGALY", "LICRA", "TAPICERIA"], "A09.1", "TELA",
+       excluir=["SERVILLETA", "SERVILLETAS"]),
+    _r("Pintura", 20, ["PINTURA", "THINNER", "TINTA", "TINTAS", "MANCHADOR", "BERELINTE", "AEROSOL", "AEROSOLES"], "A09.1", "PINTURA"),
+    _r("Flores", 20, ["FLOR", "FLORES", "ESPUMA FLORAL", "OASIS", "ARREGLO FLORAL", "EUCALIPTO", "HORTENSIAS", "RANUNCULOS",
+                      "ROSAS", "LISIANTHUS"], "B02"),
+    _r("Hidratación y alimentos en servicio", 20, ["HIELO", "AGUA", "HIDRATACION", "REFRESCO", "REFRESCOS", "BEBIDA", "BEBIDAS",
+                                                   "ALIMENTO", "ALIMENTOS", "COMIDA"], "A11.2", excluir=["GARRAFON", "GARRAFONES"]),
+    _r("Insumos de preparación", 30, ["HILO", "LISTON", "SILICON", "LENTEJUELA", "ALFILER", "ALFILERES", "TORNILLO", "TORNILLOS",
+                                      "TORNILLERIA", "PIJA", "PIJAS", "ESCUADRA", "ESCUADRAS", "GRAPA", "GRAPAS", "LIJA", "LIJAS",
+                                      "MASKING", "ESTOPA", "CONTACTO", "CONTACTOS", "SOPORTE", "SOPORTES", "MEMORIA USB", "ESPUMA"],
+       "A09.2"),
+    _r("Traslados, casetas y combustible", 30, ["UBER", "DIDI", "CASETA", "CASETAS", "PEAJE", "GASOLINA", "COMBUSTIBLE",
+                                                "TABULADOR"], "A10", plantilla="PAGO_GENERAL"),
+    _r("Producción tercerizada", 30, ["VINIL", "VINILES", "HERRERIA", "CARPINTERIA", "TORRE", "TORRES", "ESTRUCTURA", "ESTRUCTURAS",
+                                      "FRENTE DE BARRA", "FABRICACION", "REPARACION DE TARIMA"], "B01", plantilla="PAGO_GENERAL"),
+    _r("Equipo nuevo de inventario", 30, ["EQUIPO NUEVO", "COPAS METALICAS"], "G01"),
+    _r("Servicios públicos", 40, ["TELEFONO", "TELEFONIA", "TELMEX", "TELCEL", "INTERNET", "CFE", "ENERGIA ELECTRICA", "BASURA"],
+       "F02", plantilla="PAGO_GENERAL"),
+    _r("Permisos de unidades", 40, ["PERMISO", "PERMISOS", "BOB"], "F04", plantilla="PAGO_GENERAL"),
+    _r("Mantenimiento de unidades", 40, ["FRENOS", "AFINACION", "SERVICIO DE UNIDAD", "LLANTA", "LLANTAS"], "A06",
+       plantilla="PAGO_GENERAL"),
+]
+
+# Reglas por proveedor: se crean solo para los proveedores dados de alta cuyo
+# nombre contenga alguno de estos textos.
+REGLAS_PROVEEDOR = [
+    (["DILGO", "DON GUILLERMO", "PASTOR", "VERO LARA", "LEPAYU", "RENTIT"],
+     {"prioridad": 9, "cuenta": "C06", "plantilla": "SUBRENTA"}, "Subrenta"),
+    (["WILBERT", "LAVANDERIA 100"], {"prioridad": 9, "cuenta": "D03", "categoria": "LAVADO", "plantilla": "LAVANDERIA"}, "Lavandería"),
+    (["DEPARTAMENTO 360"], {"prioridad": 9, "plantilla": "DEPTO360"}, "Texto de Departamento 360"),
+]
+
+# Reglas por caja: se crean para las cajas que existan de ese tipo.
+REGLAS_CAJA = [
+    (lambda c: c.get("tipo") == "amex", "IVA desglosado en AMEX",
+     {"prioridad": 5, "desglosa_iva": True,
+      "palabras": ["COMBUSTIBLE", "GASOLINA", "TELMEX", "CFE", "GROWTH INSTITUTE", "CAPACITACION", "VIVAAEROBUS",
+                   "CITY EXPRESS", "FLEX PRICING"]}),
+    (lambda c: bool(c.get("prefijo_poliza")), "Texto de la tarjeta de compras", {"prioridad": 5, "plantilla": "TCB"}),
+    (lambda c: c.get("tipo") == "fondo_fijo", "Texto del fondo de Cancún", {"prioridad": 5, "plantilla": "CAJA_CUN", "fuerza_nd": True}),
 ]
 
 # (clave, valor, descripcion)
@@ -90,4 +136,10 @@ PARAMETROS = [
     ("cuenta_diferencias", "", "Cuenta para propinas y redondeos. Vacía: se suman al renglón principal."),
     ("aviso_diferencia_monto", "50", "Avisa si la diferencia entre comprobante y banco pasa de este monto."),
     ("aviso_diferencia_pct", "0.05", "…o de este porcentaje del pago (0.05 = 5 %)."),
+    ("plantillas_agrupan", "LAVANDERIA,DEPTO360",
+     "Plantillas que juntan en un renglón los conceptos del mismo contrato (códigos separados por coma). "
+     "Las demás van una partida por renglón."),
+    ("correcciones", "THONER=TONER, REMBOLSO=REEMBOLSO, CLOBO=GLOBO, EUCALIPO=EUCALIPTO, HORTENCIAS=HORTENSIAS, "
+                     "RANUCULOS=RANUNCULOS, SUPERVICION=SUPERVISION",
+     "Ortografía que se corrige sola en el texto: MAL=BIEN, separadas por coma."),
 ]

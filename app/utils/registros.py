@@ -28,6 +28,8 @@ TOLERANCIA = 0.005
 CONTRATOS_ESPECIALES = ("DIRECTO", "BODEGA", "MONTAJE", "MANTENIMIENTO", "PROTOTIPO")
 PLACEHOLDERS = ("VERBO", "CONCEPTO", "ITEMS", "PROVEEDOR", "FOLIO", "DOC")
 VERBOS = ("COMPRA", "PAGO", "REEMBOLSO", "RETIRO")
+SUSTANTIVOS = ("SUBRENTA", "RENTA", "FABRICACION", "MANTENIMIENTO", "SERVICIO", "LAVANDERIA", "FLETE")
+AGRUPAN = "LAVANDERIA,DEPTO360"
 
 PLANTILLA_GENERAL = "{VERBO} DE {CONCEPTO}"
 
@@ -144,7 +146,40 @@ def aplicar_plantilla(plantilla: str, valores: dict) -> str:
     texto = mayusculas(texto)
     # Si el concepto ya empieza con un verbo no se duplica: «PAGO DE PAGO DE CFE».
     texto = re.sub(rf"^(?:{'|'.join(VERBOS)})(?: DE [A-Z]+)? DE (?=(?:{'|'.join(VERBOS)})\b)", "", texto)
+    # Si el concepto ya dice qué es, se respeta su palabra: «PAGO DE SUBRENTA DE RENTA DE PISTA» → «PAGO DE RENTA DE PISTA».
+    texto = re.sub(rf"^((?:{'|'.join(VERBOS)}) DE )(?:{'|'.join(SUSTANTIVOS)}) DE (?=(?:{'|'.join(SUSTANTIVOS)}) DE )", r"\1", texto)
+    # «PAGO DE FLETE FLETE REDONDO» cuando el concepto ya trae la palabra de la plantilla.
+    texto = re.sub(r"\b([A-Z]{3,}) \1\b", r"\1", texto)
+    # Sin proveedor no queda un «A» o «EN» colgando al final.
+    texto = re.sub(r"(?:\s+(?:A|EN|POR|DE))+$", "", texto.strip(" -"))
     return texto.strip(" -")
+
+
+def con_naturaleza(cuerpo: str, naturaleza: Optional[str]) -> str:
+    """Anticipo y saldo: el mismo texto del registro cambiando solo esa palabra.
+    «PAGO DE SUBRENTA DE …» → «PAGO DE ANTICIPO DE SUBRENTA DE …»."""
+    palabra = {"anticipo": "ANTICIPO", "saldo": "SALDO"}.get(naturaleza)
+    if not palabra or cuerpo.startswith(f"PAGO DE {palabra}"):
+        return cuerpo
+    resto = re.sub(rf"^(?:{'|'.join(VERBOS)}) DE ", "", cuerpo)
+    return f"PAGO DE {palabra} DE {resto}"
+
+
+def corrector(texto: Optional[str]) -> dict:
+    """«THONER=TONER, REMBOLSO=REEMBOLSO» → {THONER: TONER, …}."""
+    pares = {}
+    for par in (texto or "").split(","):
+        if "=" in par:
+            mal, bien = (mayusculas(x) for x in par.split("=", 1))
+            if mal and bien:
+                pares[mal] = bien
+    return pares
+
+
+def corregir(texto: str, pares: dict) -> str:
+    for mal, bien in pares.items():
+        texto = re.sub(rf"\b{re.escape(mal)}\b", bien, texto)
+    return texto
 
 
 def armar_ref(*, cdv: bool, plaza: str, poliza: Optional[str], nd: bool, categoria: Optional[str],
@@ -279,6 +314,9 @@ class Motor:
         self.plantillas = plantillas
         self.parametros = parametros or {}
         self.cuenta_iva = next((c for c in cuentas.values() if c.get("tipo") == "iva" and c.get("activa", True)), None)
+        # Solo estas plantillas juntan conceptos del mismo contrato (lavandería, una remisión de Depto 360).
+        self.agrupan = {mayusculas(x) for x in (self.parametros.get("plantillas_agrupan", AGRUPAN) or "").split(",") if x.strip()}
+        self.correcciones = corrector(self.parametros.get("correcciones"))
 
     def _plantilla(self, plantilla_id) -> str:
         p = self.plantillas.get(plantilla_id) if plantilla_id else None
@@ -309,19 +347,24 @@ class Motor:
             "estado": "listo" if cuenta else "pendiente",
         }
 
+    def _agrupa(self, plantilla_id) -> bool:
+        p = self.plantillas.get(plantilla_id) if plantilla_id else None
+        return (p or {}).get("codigo", "GENERAL") in self.agrupan
+
     def _grupos(self, piezas: list[dict], ctx_base: dict) -> list[dict]:
-        """Junta piezas (partida × contrato) con la misma cuenta, categoría,
-        plantilla y contrato en un solo renglón, en el orden en que aparecen."""
+        """Una partida por renglón (y contrato). Con una plantilla que agrupa
+        (lavandería) los conceptos del mismo contrato y cuenta van juntos."""
         grupos: dict[tuple, dict] = {}
         for p in piezas:
-            r = resolver(self.reglas, {**ctx_base, "texto": normalizar(p["concepto"]), "insumo_id": p.get("insumo_id")})
+            concepto = corregir(mayusculas(p["concepto"]), self.correcciones)
+            r = resolver(self.reglas, {**ctx_base, "texto": normalizar(concepto), "insumo_id": p.get("insumo_id")})
             cuenta_id = p.get("cuenta_id") or r["cuenta_id"]
-            llave = (p["contrato"], cuenta_id, r["categoria"], r["plantilla_id"])
+            llave = (p["contrato"], cuenta_id, r["categoria"], r["plantilla_id"],
+                     None if self._agrupa(r["plantilla_id"]) else p.get("n"))
             g = grupos.setdefault(llave, {"contrato": p["contrato"], "cuenta_id": cuenta_id, "categoria": r["categoria"],
                                           "plantilla_id": r["plantilla_id"], "regla_id": None if p.get("cuenta_id") else r["regla_id"],
                                           "peso": 0.0, "conceptos": [], "items": [], "fuerza_nd": False, "desglosa_iva": False})
             g["peso"] += p["peso"]
-            concepto = mayusculas(p["concepto"])
             if concepto not in g["conceptos"]:
                 g["conceptos"].append(concepto)
             g["items"].append(" ".join(x for x in (_cantidad(p.get("cantidad")), concepto) if x))
@@ -333,10 +376,10 @@ class Motor:
     def _piezas(lineas: list[dict]) -> list[dict]:
         """Cada línea se parte entre sus contratos en partes iguales."""
         piezas = []
-        for linea in lineas:
+        for n, linea in enumerate(lineas):
             lista = contratos(linea.get("contrato")) or [None]
             for c in lista:
-                piezas.append({**linea, "contrato": c, "peso": float(linea.get("importe") or 0) / len(lista)})
+                piezas.append({**linea, "n": n, "contrato": c, "peso": float(linea.get("importe") or 0) / len(lista)})
         return piezas
 
     def _valores(self, grupo_o_grupos, verbo: str, proveedor: str, folio, doc) -> dict:
@@ -349,7 +392,8 @@ class Motor:
                 "PROVEEDOR": mayusculas(proveedor), "FOLIO": str(folio or ""), "DOC": mayusculas(doc)}
 
     def _bloque(self, pago: dict, grupos: list[dict], base_total: float, iva: float, nd: bool,
-                verbo: str, proveedor: str, folio, doc, base_renglon: dict, avisos: list[str]) -> list[dict]:
+                verbo: str, proveedor: str, folio, doc, base_renglon: dict, avisos: list[str],
+                naturaleza: Optional[str] = None) -> list[dict]:
         """Renglones de un conjunto de grupos que comparten un solo IVA."""
         renglones = []
         montos = repartir(base_total, [g["peso"] for g in grupos])
@@ -357,7 +401,8 @@ class Motor:
             if monto <= 0:
                 continue
             cuenta = self._cuenta(g["cuenta_id"])
-            cuerpo = aplicar_plantilla(self._plantilla(g["plantilla_id"]), self._valores(g, verbo, proveedor, folio, doc))
+            cuerpo = con_naturaleza(aplicar_plantilla(self._plantilla(g["plantilla_id"]),
+                                                      self._valores(g, verbo, proveedor, folio, doc)), naturaleza)
             lista = [g["contrato"]] if g["contrato"] else []
             ref = armar_ref(cdv=bool(cuenta and cuenta.get("cdv")), plaza=pago["plaza"], poliza=pago.get("poliza"),
                             nd=nd, categoria=g["categoria"], cuerpo=cuerpo, contratos_=lista, fecha=pago["fecha"])
@@ -368,8 +413,8 @@ class Motor:
             for g in grupos:
                 if g["contrato"] and g["contrato"] not in lista:
                     lista.append(g["contrato"])
-            cuerpo = aplicar_plantilla(self._plantilla(grupos[0]["plantilla_id"]),
-                                       self._valores(grupos, verbo, proveedor, folio, doc))
+            cuerpo = con_naturaleza(aplicar_plantilla(self._plantilla(grupos[0]["plantilla_id"]),
+                                                      self._valores(grupos, verbo, proveedor, folio, doc)), naturaleza)
             # El IVA nunca lleva [CDV], aunque su subtotal sí.
             ref = armar_ref(cdv=False, plaza=pago["plaza"], poliza=pago.get("poliza"), nd=False,
                             categoria=grupos[0]["categoria"], cuerpo=cuerpo, contratos_=lista, fecha=pago["fecha"])
@@ -405,12 +450,10 @@ class Motor:
             _, iva = desglosar(monto)
         nd = iva <= 0
 
-        naturaleza = a.get("naturaleza")
-        verbo = {"anticipo": "PAGO DE ANTICIPO", "saldo": "PAGO DE SALDO"}.get(naturaleza, "COMPRA")
         doc = ((factura.get("serie") or "") + (factura.get("folio") or "")) if factura else ""
         base_renglon = {"pago_id": a.get("pago_id"), "orden_id": a.get("orden_id")}
-        return self._bloque(pago, grupos, redondear(monto - iva), iva, nd, verbo, proveedor.get("nombre") or "",
-                            a.get("orden_folio"), doc, base_renglon, avisos)
+        return self._bloque(pago, grupos, redondear(monto - iva), iva, nd, "COMPRA", proveedor.get("nombre") or "",
+                            a.get("orden_folio"), doc, base_renglon, avisos, a.get("naturaleza"))
 
     def _lineas(self, pago: dict) -> list[dict]:
         ctx = {"proveedor_id": None, "caja_id": pago.get("caja_id"), "plaza": pago.get("plaza")}
@@ -421,7 +464,7 @@ class Motor:
             fuerza_nd = any(g["fuerza_nd"] for g in grupos)
             desglosa = bool(linea.get("con_iva")) or any(g["desglosa_iva"] for g in grupos)
             iva = desglosar(importe)[1] if desglosa and not fuerza_nd else 0.0
-            filas = self._bloque(pago, grupos, redondear(importe - iva), 0.0, iva <= 0, "PAGO",
+            filas = self._bloque(pago, grupos, redondear(importe - iva), 0.0, iva <= 0, "COMPRA",
                                  pago.get("proveedor_texto") or "", None, "", {"pago_id": None, "orden_id": None}, [])
             renglones += filas
             if iva > 0:
@@ -430,7 +473,7 @@ class Motor:
             # Un solo renglón de IVA para todas las líneas con factura.
             grupos = [g for gs, _ in con_iva for g in gs]
             iva = redondear(sum(_dec(i) for _, i in con_iva))
-            renglones += self._bloque(pago, grupos, 0.0, iva, False, "PAGO", pago.get("proveedor_texto") or "",
+            renglones += self._bloque(pago, grupos, 0.0, iva, False, "COMPRA", pago.get("proveedor_texto") or "",
                                       None, "", {"pago_id": None, "orden_id": None}, [])
         return renglones
 

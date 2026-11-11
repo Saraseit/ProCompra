@@ -26,6 +26,7 @@ PLANTILLAS = {
     "fle": {"id": "fle", "codigo": "FLETE", "plantilla": "PAGO DE FLETE {CONCEPTO} A {PROVEEDOR}"},
     "cun": {"id": "cun", "codigo": "CAJA_CUN", "plantilla": "COMPRA DE {CONCEPTO}[ EN {PROVEEDOR}]"},
     "d360": {"id": "d360", "codigo": "DEPTO360", "plantilla": "PAGO DE {CONCEPTO} A {PROVEEDOR}[ {DOC}]"},
+    "pag": {"id": "pag", "codigo": "PAGO_GENERAL", "plantilla": "PAGO DE {CONCEPTO}[ A {PROVEEDOR}]"},
 }
 REGLAS = [
     {"id": "r-sub", "nombre": "Subrenta", "prioridad": 10, "proveedor_id": "dilgos", "cuenta_id": "c06", "plantilla_id": "sub"},
@@ -41,8 +42,8 @@ REGLAS = [
     {"id": "r-tela", "nombre": "Telas", "prioridad": 20, "palabras": ["TELA", "TAFETAN"], "palabras_excluir": ["SERVILLETAS"],
      "cuenta_id": "a091", "categoria_texto": "TELA"},
     {"id": "r-hielo", "nombre": "Hidratación", "prioridad": 20, "palabras": ["HIELO", "AGUA"], "cuenta_id": "a112"},
-    {"id": "r-didi", "nombre": "Traslados", "prioridad": 30, "palabras": ["DIDI", "UBER"], "cuenta_id": "a10"},
-    {"id": "r-cfe", "nombre": "CFE", "prioridad": 40, "palabras": ["CFE"], "cuenta_id": "f02", "desglosa_iva": True},
+    {"id": "r-didi", "nombre": "Traslados", "prioridad": 30, "palabras": ["DIDI", "UBER"], "cuenta_id": "a10", "plantilla_id": "pag"},
+    {"id": "r-cfe", "nombre": "CFE", "prioridad": 40, "palabras": ["CFE"], "cuenta_id": "f02", "desglosa_iva": True, "plantilla_id": "pag"},
 ]
 MOTOR = R.Motor(REGLAS, CUENTAS, PLANTILLAS)
 
@@ -290,3 +291,52 @@ def test_permisos_propago():
     assert ROLES_CONTABILIDAD in _roles("/propago/exportar", "POST")
     assert ROLES_CONTABILIDAD in _roles("/propago/reglas", "POST")
     assert ROLES_CONTABILIDAD in _roles("/propago/sin-orden", "POST")
+
+
+# ── Reglas de registro ERP (sección 3 y 6) ───────────
+
+def test_fuera_de_lavanderia_cada_partida_va_en_su_renglon():
+    p = pago(aplicaciones=[aplicacion(300, [
+        {"concepto": "Hilo blanco", "importe": 100, "contrato": "17036"},
+        {"concepto": "Hilo negro", "importe": 200, "contrato": "17036"},
+    ])])
+    r = MOTOR.generar(p)
+    assert [(x["cargo"], x["ref"]) for x in r] == [
+        (100.00, "MID - ND - COMPRA DE HILO BLANCO C17036 EL 13/10/26"),
+        (200.00, "MID - ND - COMPRA DE HILO NEGRO C17036 EL 13/10/26"),
+    ]
+
+
+def test_subrenta_respeta_renta_de():
+    p = pago(fecha="2026-10-30", aplicaciones=[aplicacion(500, [
+        {"concepto": "Renta de pista", "importe": 500, "contrato": "17300"},
+    ], proveedor=("dilgos", "Dilgos"))])
+    (r,) = MOTOR.generar(p)
+    assert r["ref"] == "[CDV] - MID - ND - PAGO DE RENTA DE PISTA A DILGOS C17300 EL 30/10/26"
+
+
+def test_saldo_repite_el_texto_cambiando_la_palabra():
+    p = pago(fecha="2026-10-09", aplicaciones=[aplicacion(1000, [
+        {"concepto": "Servilletas lino arena", "cantidad": 77, "importe": 3080, "contrato": "17024"},
+    ], proveedor=("guillermo", "Don Guillermo"), naturaleza="saldo")])
+    (r,) = MOTOR.generar(p)
+    assert r["ref"] == ("[CDV] - MID - ND - PAGO DE SALDO DE SUBRENTA DE 77 SERVILLETAS LINO ARENA A DON GUILLERMO "
+                        "C17024 EL 09/10/26")
+
+
+def test_corrige_la_ortografia_evidente():
+    motor = R.Motor(REGLAS, CUENTAS, PLANTILLAS, {"correcciones": "THONER=TONER, REMBOLSO=REEMBOLSO"})
+    (r,) = motor.generar(pago(lineas=[{"concepto": "Thoner para impresora", "importe": 850}]))
+    assert r["ref"] == "MID - ND - COMPRA DE TONER PARA IMPRESORA EL 13/10/26"
+
+
+def test_reglas_iniciales_salen_con_las_mismas_columnas():
+    # PostgREST rechaza un lote cuyas filas tienen llaves distintas: así falló la primera carga.
+    from app.api import propago
+    from app.utils import propago_inicial as inicial
+    cuentas = {c[0]: {"id": c[0]} for c in inicial.CUENTAS}
+    plantillas = {p[0]: {"id": p[0]} for p in inicial.PLANTILLAS}
+    filas = [propago._fila_regla(r, cuentas, plantillas) for r in inicial.REGLAS]
+    assert len({tuple(sorted(f)) for f in filas}) == 1
+    assert all(f["cuenta_id"] or f["fuerza_nd"] or f["desglosa_iva"] or f["plantilla_id"] for f in filas)
+    assert len({f["nombre"] for f in filas}) == len(filas)

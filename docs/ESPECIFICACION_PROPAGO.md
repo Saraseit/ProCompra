@@ -713,6 +713,15 @@ Se carga desde la pantalla (§10.4), no con migración. Lo que sigue es la carga
 
 ### 8.2 Reglas iniciales (concepto → cuenta)
 
+> Actualizado el 11/11/2026 con las «Reglas de registro ERP» de David. La carga inicial completa vive en
+> `app/utils/propago_inicial.py` (28 reglas por concepto, reglas por proveedor para Dilgos, Don Guillermo, Pastor,
+> Vero Lara, Lepayu, Rentit, Wilbert Vera, Lavandería 100 Años y Departamento 360, y reglas por caja para AMEX, la
+> tarjeta de compras y el fondo de Cancún). Las de proveedor y caja solo se crean si el proveedor o la caja existen:
+> «Completar con el catálogo inicial» agrega las que falten por nombre, sin tocar las editadas.
+>
+> Fuera de lavandería y Departamento 360 (parámetro `plantillas_agrupan`) cada partida va en su propio renglón;
+> la ortografía evidente se corrige con el parámetro `correcciones`. La tabla siguiente es la versión original.
+
 | Prioridad | Condición | Cuenta | Categoría | Acciones |
 |---|---|---|---|---|
 | 10 | Proveedor lavandería (Wilbert Vera, Lavandería 100 Años) | D03 | LAVADO | ND, plantilla LAVANDERIA |

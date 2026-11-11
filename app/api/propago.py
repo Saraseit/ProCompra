@@ -161,7 +161,9 @@ def _catalogo() -> dict:
     cuentas = {c["id"]: c for c in (supabase.table("cuentas_contables").select("*").execute()).data or []}
     plantillas = {p["id"]: p for p in (supabase.table("plantillas_registro").select("*").execute()).data or []}
     reglas = (supabase.table("reglas_cuenta").select("*").order("prioridad").execute()).data or []
-    parametros = {p["clave"]: p["valor"] for p in (supabase.table("parametros_contables").select("*").execute()).data or []}
+    # Un parámetro que aún no se guarda toma su valor inicial.
+    parametros = {c: v for c, v, _ in inicial.PARAMETROS}
+    parametros.update({p["clave"]: p["valor"] for p in (supabase.table("parametros_contables").select("*").execute()).data or []})
     return {"cuentas": cuentas, "plantillas": plantillas, "reglas": reglas, "parametros": parametros}
 
 
@@ -603,7 +605,7 @@ class ReglaDatos(BaseModel):
 
 
 class Parametro(BaseModel):
-    valor: Optional[str] = Field(None, max_length=200)
+    valor: Optional[str] = Field(None, max_length=3000)
 
 
 def _guardar(tabla: str, entidad: str, datos: dict, usuario: dict, fila_id: Optional[str] = None) -> dict:
@@ -769,6 +771,36 @@ def guardar_parametro(clave: str, body: Parametro, usuario=Depends(requiere_rol(
     return fila
 
 
+def _reglas_iniciales() -> list[dict]:
+    """Las reglas por concepto más las de los proveedores y cajas que existan."""
+    reglas = list(inicial.REGLAS)
+    proveedores = (supabase.table("proveedores").select("id,nombre").eq("activo", True).execute()).data or []
+    for textos, datos, etiqueta in inicial.REGLAS_PROVEEDOR:
+        for p in proveedores:
+            nombre = normalizar(p["nombre"])
+            if any(normalizar(t) in nombre for t in textos):
+                reglas.append({"nombre": f"{etiqueta} · {p['nombre']}", "palabras": [], "proveedor_id": p["id"], **datos})
+    for coincide, etiqueta, datos in inicial.REGLAS_CAJA:
+        for c in (supabase.table("cajas").select("*").eq("activa", True).execute()).data or []:
+            if coincide(c):
+                reglas.append({"nombre": f"{etiqueta} · {c['nombre']}", "caja_id": c["id"], "palabras": [], **datos})
+    return reglas
+
+
+def _fila_regla(r: dict, cuentas: dict, plantillas: dict) -> dict:
+    """Todas las filas con las mismas columnas: PostgREST rechaza un lote con llaves distintas."""
+    return {
+        "nombre": r["nombre"], "prioridad": r.get("prioridad", 50),
+        "palabras": r.get("palabras") or [], "palabras_excluir": r.get("palabras_excluir") or [],
+        "proveedor_id": r.get("proveedor_id"), "caja_id": r.get("caja_id"), "plaza": r.get("plaza"),
+        "con_cfdi": r.get("con_cfdi"),
+        "cuenta_id": cuentas[r["cuenta"]]["id"] if r.get("cuenta") in cuentas else None,
+        "categoria_texto": r.get("categoria"),
+        "plantilla_id": plantillas[r["plantilla"]]["id"] if r.get("plantilla") in plantillas else None,
+        "fuerza_nd": bool(r.get("fuerza_nd")), "desglosa_iva": bool(r.get("desglosa_iva")),
+    }
+
+
 @router.post("/catalogo/inicial")
 def cargar_inicial(usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD))):
     """Carga lo que falte del catálogo de la especificación. No toca lo ya editado."""
@@ -786,14 +818,10 @@ def cargar_inicial(usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD))):
         for f in supabase.table("plantillas_registro").insert(nuevas_p).execute().data or []:
             plantillas[f["codigo"]] = f
 
-    reglas = 0
-    if not (supabase.table("reglas_cuenta").select("id").limit(1).execute()).data:
-        filas = []
-        for nombre, prioridad, palabras, excluir, cuenta, categoria, plantilla, extras in inicial.REGLAS:
-            filas.append({"nombre": nombre, "prioridad": prioridad, "palabras": palabras, "palabras_excluir": excluir,
-                          "cuenta_id": cuentas[cuenta]["id"] if cuenta else None, "categoria_texto": categoria,
-                          "plantilla_id": plantillas[plantilla]["id"] if plantilla else None, **extras})
-        reglas = len(supabase.table("reglas_cuenta").insert(filas).execute().data or [])
+    # Solo las reglas que falten por nombre: las ya editadas no se tocan.
+    existentes_r = {r["nombre"] for r in (supabase.table("reglas_cuenta").select("nombre").execute()).data or []}
+    filas = [_fila_regla(r, cuentas, plantillas) for r in _reglas_iniciales() if r["nombre"] not in existentes_r]
+    reglas = len(supabase.table("reglas_cuenta").insert(filas).execute().data or []) if filas else 0
 
     existentes = {p["clave"] for p in (supabase.table("parametros_contables").select("clave").execute()).data or []}
     parametros = [{"clave": c, "valor": v, "descripcion": d} for c, v, d in inicial.PARAMETROS if c not in existentes]
