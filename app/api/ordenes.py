@@ -656,6 +656,10 @@ def registrar_pago(
     motivo = motivo_sin_pago(orden)
     if motivo:
         raise HTTPException(status_code=409, detail=motivo)
+    # Con ProPago el pago sale de una caja y genera sus registros: va por /pagos.
+    from app.api import propago
+    if propago.disponible() and propago.hay_cajas():
+        raise HTTPException(status_code=409, detail="Actualiza la página: el pago ahora se registra eligiendo la caja")
 
     datos = pago.model_dump()
     datos["orden_id"]       = orden_id

@@ -751,13 +751,16 @@ Hoja única, encabezados exactos:
 
 | Columna | Contenido | Formato |
 |---|---|---|
-| FECHA | Fecha de captura (AMEX: último día del mes siguiente al corte) | Celda de **fecha** con formato `dd-mmm-yy` |
+| Fecha | **Día en que se descarga el archivo** (decisión del 11/11/2026; reemplaza la regla de AMEX). Volver a bajar un lote conserva su fecha original. | Celda de **fecha** con formato `dd-mmm-yy` |
 | CONCEPTO | `EFECTIVO` | texto |
-| CARGO | Importe, siempre positivo | número, 2 decimales |
+| CARGO | Importe del movimiento, siempre positivo | número, 2 decimales |
 | CLIENTE O GASTO EN | `cuenta_nombre_erp` del renglón | texto |
 | REF | Texto del registro (§7.4) | texto |
-| ID_EVENTO | Contrato numérico; 0 si no hay o es especial | entero |
-| PROPIETARIO | De la caja: `AMERICAN`, `COMPRAS`, `BBVA`… | texto |
+| ID_EVENTO | Contrato numérico; 0 si no lleva contrato o es especial | entero |
+| PROPIETARIO | **Nombre de la caja** del pago, en mayúsculas: `COMPRAS`, `AMERICAN`, `DAVID`… | texto |
+
+- El encabezado de la primera columna es `Fecha` (así viene el formato del ERP).
+- Se eligen pagos completos para descargar, no renglones sueltos: los subtotales y su IVA viajan juntos.
 
 - Orden de los renglones: por póliza o fecha y, dentro de cada grupo, subtotales primero, luego H01, luego retenciones.
 - La FECHA va como celda de fecha y no como texto, para que el idioma del mes no dependa del archivo. **Antes de producción se prueba con una importación real** (§14.7).
@@ -952,14 +955,14 @@ Salida esperada: gasto A03 5,000.00, H01 800.00 y retención de IVA 200.00 en su
 
 ## 14. Decisiones abiertas
 
-1. **Cómo viajan las retenciones al ERP.** El formato solo tiene CARGO y el ERP no acepta negativos, así que un renglón de retención no puede restar para que la suma dé lo pagado. Hace falta saber si el ERP recibe abonos (otra columna, otro archivo o captura manual), además de las claves de las dos cuentas. Mientras tanto, los pagos con retenciones no pasan a `listo`.
+1. **Retenciones: pendiente por decisión de David (11/11/2026).** Son casos muy raros en la operación; no se implementan en v1. Si llega uno, se captura a mano.
 2. ~~Póliza TCB~~ — resuelta (§6.6.1).
-3. **PROPIETARIO de cajas chicas y del fondo Cancún:** en los lotes de pagos se dejó en blanco. Definir el valor por caja.
+3. ~~PROPIETARIO de cajas chicas y del fondo Cancún~~ — resuelta: es el nombre de la caja (§9).
 4. **Merma o reposición a proveedores de subrenta:** se usó A02 (cuenta virtual); el catálogo sugiere C06 "reposición al proveedor". Definir.
 5. **Nombres de cuentas no verificados** (§8.1): importar el catálogo exportado del ERP (§10.4).
 6. **B11:** falta su nombre.
 7. **Formato de FECHA:** confirmar con una importación de prueba que el ERP acepta la celda de fecha `dd-mmm-yy`.
-8. **Fecha de captura en pagos normales:** ¿la del pago o la del día de exportación? Hoy se usa la del día en que se arma el lote. Con la fecha del pago, volver a generar un lote no cambiaría las fechas.
+8. ~~Fecha de captura~~ — resuelta: la del día de la descarga (§9).
 9. **Gastos sin orden:** ¿límite de monto o de frecuencia antes de exigir una OG?
 10. **Estado de cuenta por proveedor a crédito:** fuera de v1.
 

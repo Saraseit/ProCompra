@@ -22,6 +22,7 @@ from app.database import supabase, una_fila
 from app.roles import ROLES_CONTABILIDAD
 from app.utils import credito, pagos as cuentas
 from app.utils.bandeja import falta_tabla
+from app.api import propago
 from app.api.ordenes import (
     DatosPago, ESTADOS_PAGO_CREDITO, _uuid_valido, con_programados, despues_del_pago, motivo_sin_pago,
     registrar_evento,
@@ -63,16 +64,32 @@ def agrupa() -> bool:
 class Aplicacion(BaseModel):
     orden_id: str
     monto: float = Field(gt=0)
+    # Anticipo y saldo cambian el texto del registro ERP («PAGO DE ANTICIPO DE …»).
+    naturaleza: Optional[str] = None
 
     @field_validator("orden_id")
     @classmethod
     def _orden_valida(cls, v: str) -> str:
         return _uuid_valido(v)
 
+    @field_validator("naturaleza")
+    @classmethod
+    def _naturaleza(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in propago.NATURALEZAS:
+            raise ValueError("naturaleza no válida")
+        return v
+
 
 class PagoVarias(DatosPago):
-    """Un pago (transferencia, efectivo, tarjeta) repartido entre órdenes."""
+    """Un pago (transferencia, efectivo, tarjeta) repartido entre órdenes.
+
+    Con ProPago activo sale de una caja; la comisión y la diferencia (propina,
+    redondeo) son lo que el banco cobró de más y se suman al registro principal.
+    """
     aplicaciones: list[Aplicacion] = Field(min_length=1, max_length=100)
+    caja_id: Optional[str] = None
+    comision: float = Field(0, ge=0)
+    diferencia: float = Field(0, ge=0)
 
     @field_validator("aplicaciones")
     @classmethod
@@ -122,18 +139,33 @@ def registrar(body: PagoVarias, usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD
     if errores:
         raise HTTPException(status_code=409, detail=". ".join(errores))
 
-    comunes = body.model_dump(exclude={"aplicaciones"})
+    # Con ProPago cada pago sale de una caja y genera sus registros para el ERP.
+    caja = None
+    con_propago = agrupa() and propago.disponible()
+    if con_propago and body.caja_id:
+        caja = propago.exigir_caja(usuario, body.caja_id)
+    elif con_propago and propago.hay_cajas():
+        raise HTTPException(status_code=400, detail="Elige de qué caja sale el pago")
+    if not caja and (body.comision or body.diferencia):
+        raise HTTPException(status_code=400, detail="La comisión y la diferencia solo aplican a pagos de una caja")
+
+    comunes = body.model_dump(exclude={"aplicaciones", "caja_id", "comision", "diferencia"})
+    total = round(sum(a.monto for a in body.aplicaciones), 2)
     movimiento_id = None
     if agrupa():
         res = supabase.table("movimientos_pago").insert({
             **{k: comunes.get(k) for k in ("fecha_pago", "metodo", "referencia", "entregado_a", "notas")},
             "registrado_por": usuario["id"],
+            **({"caja_id": caja["id"], "plaza": caja["plaza"], "tipo": "con_orden",
+                "monto": round(total + body.comision + body.diferencia, 2),
+                "comision": round(body.comision, 2), "diferencia": round(body.diferencia, 2)} if caja else {}),
         }).execute()
         movimiento_id = res.data[0]["id"] if res.data else None
 
     filas = [
         {**comunes, "orden_id": a.orden_id, "monto": round(a.monto, 2), "registrado_por": usuario["id"],
-         **({"movimiento_id": movimiento_id} if movimiento_id else {})}
+         **({"movimiento_id": movimiento_id} if movimiento_id else {}),
+         **({"naturaleza": a.naturaleza or "total"} if con_propago else {})}
         for a in body.aplicaciones
     ]
     try:
@@ -145,11 +177,12 @@ def registrar(body: PagoVarias, usuario=Depends(requiere_rol(*ROLES_CONTABILIDAD
             supabase.table("movimientos_pago").delete().eq("id", movimiento_id).execute()
         raise HTTPException(status_code=400, detail="No se pudo registrar el pago")
 
-    total = round(sum(f["monto"] for f in filas), 2)
     nota = f"pago de ${total:,.2f} repartido en {len(filas)} órdenes" if len(filas) > 1 else None
     for fila in filas:
         despues_del_pago(ordenes[fila["orden_id"]], fila, usuario["id"], nota=nota)
-    return {"movimiento_id": movimiento_id, "ordenes": len(filas), "monto": total}
+    registros = propago.tras_registrar(movimiento_id) if caja and movimiento_id else {}
+    return {"movimiento_id": movimiento_id, "ordenes": len(filas), "monto": total,
+            "registros": registros.get("generados", 0)}
 
 
 @router.get("")
@@ -191,10 +224,13 @@ def borrar(pago_id: str, usuario=Depends(requiere_rol("admin"))):
     if not filas and not es_movimiento:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
+    # Lo ya exportado al ERP deja un ajuste para quitarlo allá (no acepta negativos).
+    info = propago.antes_de_borrar(pago_id if es_movimiento else None, [f["id"] for f in filas], usuario["id"])
     for lote in range(0, len(filas), 50):
         supabase.table("pagos").delete().in_("id", [f["id"] for f in filas[lote:lote + 50]]).execute()
     if es_movimiento:
         supabase.table("movimientos_pago").delete().eq("id", pago_id).execute()
+    propago.despues_de_borrar(info)
 
     for orden_id in {f["orden_id"] for f in filas}:
         orden = una_fila(supabase.table("ordenes_compra").select("id, estado, pagos(id)").eq("id", orden_id))

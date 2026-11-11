@@ -32,7 +32,7 @@ app.add_middleware(
 )
 
 # ── Rutas ─────────────────────────────────────────────
-from app.api import proveedores, requerimientos, ordenes, usuarios, reportes, adjuntos, facturas, ajustes, avisos, precios, pagos
+from app.api import proveedores, requerimientos, ordenes, usuarios, reportes, adjuntos, facturas, ajustes, avisos, precios, pagos, propago
 app.include_router(proveedores.router, prefix="/api")
 app.include_router(requerimientos.router, prefix="/api")
 app.include_router(ordenes.router, prefix="/api")
@@ -44,6 +44,7 @@ app.include_router(ajustes.router, prefix="/api")
 app.include_router(avisos.router, prefix="/api")
 app.include_router(precios.router, prefix="/api")
 app.include_router(pagos.router, prefix="/api")
+app.include_router(propago.router, prefix="/api")
 
 # ── Health check ──────────────────────────────────────
 @app.get("/")
