@@ -294,6 +294,16 @@ def _cantidad(valor) -> str:
     return f"{n:g}" if n else ""
 
 
+def _item(cantidad, concepto: str) -> str:
+    """«30 SERVILLETAS» para {ITEMS}, sin repetir la cantidad si el concepto ya la
+    trae («RENTA DE 30 SERVILLETAS», no «30 RENTA DE 30 SERVILLETAS»)."""
+    n = _cantidad(cantidad)
+    if n and re.search(rf"(?<![\d.]){re.escape(n)}(?![\d.])", concepto):
+        n = ""
+    # Con la cantidad delante, «RENTA DE» ya no queda al inicio para respetarse.
+    return " ".join(x for x in (n, re.sub(r"^(?:SUB)?RENTA DE ", "", concepto) if n else concepto) if x)
+
+
 class Motor:
     """Arma los renglones de un pago.
 
@@ -367,7 +377,7 @@ class Motor:
             g["peso"] += p["peso"]
             if concepto not in g["conceptos"]:
                 g["conceptos"].append(concepto)
-            g["items"].append(" ".join(x for x in (_cantidad(p.get("cantidad")), concepto) if x))
+            g["items"].append(_item(p.get("cantidad"), concepto))
             g["fuerza_nd"] = g["fuerza_nd"] or r["fuerza_nd"]
             g["desglosa_iva"] = g["desglosa_iva"] or r["desglosa_iva"]
         return list(grupos.values())

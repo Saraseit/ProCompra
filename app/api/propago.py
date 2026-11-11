@@ -286,6 +286,12 @@ def _mov(movimiento_id: str) -> Optional[dict]:
     return una_fila(supabase.table("movimientos_pago").select("*,caja:caja_id(*)").eq("id", movimiento_id))
 
 
+def filas_registro(mov: dict, renglones: list[dict]) -> list[dict]:
+    """Los renglones del motor listos para registros_erp (la póliza vive en el movimiento)."""
+    return [{**r, "movimiento_id": mov["id"], "caja_id": mov["caja_id"], "propietario": propietario(mov["caja"])}
+            for r in renglones]
+
+
 def generar(movimiento_id: str, forzar: bool = False, cat: dict = None) -> dict:
     """(Re)genera los renglones de un movimiento que aún no se exporta.
 
@@ -304,8 +310,7 @@ def generar(movimiento_id: str, forzar: bool = False, cat: dict = None) -> dict:
     renglones = calcular(mov, mov["caja"], cat)
     if existentes:
         supabase.table("registros_erp").delete().eq("movimiento_id", movimiento_id).neq("estado", "exportado").execute()
-    filas = [{**r, "movimiento_id": movimiento_id, "caja_id": mov["caja_id"], "propietario": propietario(mov["caja"]),
-              "poliza": mov.get("poliza")} for r in renglones]
+    filas = filas_registro(mov, renglones)
     if filas:
         supabase.table("registros_erp").insert(filas).execute()
     return {"generados": len(filas)}
@@ -336,8 +341,8 @@ def numerar_polizas(caja: dict, fecha: str) -> list[str]:
             # Los editados a mano conservan su texto; solo cambia el número de póliza.
             viejo, nuevo = motor.texto_poliza(prefijo, antes), motor.texto_poliza(prefijo, despues)
             for r in (supabase.table("registros_erp").select("id,ref").eq("movimiento_id", mov_id).execute()).data or []:
-                supabase.table("registros_erp").update({"ref": r["ref"].replace(f"{viejo} - ", f"{nuevo} - "),
-                                                        "poliza": despues}).eq("id", r["id"]).execute()
+                supabase.table("registros_erp").update(
+                    {"ref": r["ref"].replace(f"{viejo} - ", f"{nuevo} - ")}).eq("id", r["id"]).execute()
     return [c[0] for c in cambiados]
 
 

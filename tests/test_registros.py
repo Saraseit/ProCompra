@@ -330,6 +330,49 @@ def test_corrige_la_ortografia_evidente():
     assert r["ref"] == "MID - ND - COMPRA DE TONER PARA IMPRESORA EL 13/10/26"
 
 
+def test_subrenta_no_repite_renta_de_ni_la_cantidad():
+    motor = R.Motor(REGLAS, CUENTAS, PLANTILLAS, {})
+    (r,) = motor.generar(pago(aplicaciones=[aplicacion(450, [
+        {"concepto": "Renta de 30 servilletas tela rosa", "cantidad": 30, "importe": 450, "contrato": "17403"},
+    ], proveedor=("dilgos", "DILGO BANQUETES"), naturaleza="anticipo")]))
+    assert r["ref"] == ("[CDV] - MID - ND - PAGO DE ANTICIPO DE RENTA DE 30 SERVILLETAS TELA ROSA "
+                        "A DILGO BANQUETES C17403 EL 13/10/26")
+    (r,) = motor.generar(pago(aplicaciones=[aplicacion(800, [
+        {"concepto": "Renta de manteles redondos", "cantidad": 10, "importe": 800, "contrato": "17403"},
+    ], proveedor=("dilgos", "DILGO BANQUETES"))]))
+    assert r["ref"] == "[CDV] - MID - ND - PAGO DE SUBRENTA DE 10 MANTELES REDONDOS A DILGO BANQUETES C17403 EL 13/10/26"
+
+
+def test_lija_de_agua_no_es_hidratacion():
+    from app.utils import propago_inicial as inicial
+    cuentas = {c: {"id": c, "clave": c, "nombre_erp": n, "tipo": t, "cdv": cdv} for c, n, _, t, cdv, _ in inicial.CUENTAS}
+    plantillas = {c: {"id": c, "codigo": c, "plantilla": p} for c, p, _ in inicial.PLANTILLAS}
+    reglas = [{"id": r["nombre"], **{k: v for k, v in r.items() if k not in ("cuenta", "plantilla", "categoria")},
+               "cuenta_id": r.get("cuenta"), "plantilla_id": r.get("plantilla"), "categoria_texto": r.get("categoria")}
+              for r in inicial.REGLAS]
+    motor = R.Motor(reglas, cuentas, plantillas, {})
+    (r,) = motor.generar(pago(lineas=[{"concepto": "Lija de agua grano 120", "importe": 250}]))
+    assert r["cuenta_id"] == "A09.2"
+
+
+def _columnas(tabla: str) -> set[str]:
+    import re
+    from pathlib import Path
+    sql = (Path(__file__).parent.parent / "migrations" / "2026-11-11_fase8_propago.sql").read_text(encoding="utf-8")
+    cuerpo = re.search(rf"create table if not exists public\.{tabla} \((.*?)\n\);", sql, re.S).group(1)
+    return {m.group(1) for m in re.finditer(r"^\s+([a-z_]+)\s+\S", cuerpo, re.M)}
+
+
+def test_los_renglones_solo_llevan_columnas_de_registros_erp():
+    # Una llave que la tabla no tiene tumba el insert completo: así se perdió «poliza».
+    from app.api import propago
+    motor = R.Motor(REGLAS, CUENTAS, PLANTILLAS, {})
+    renglones = motor.generar(pago(poliza="TCB 4", lineas=[{"concepto": "Thinner", "importe": 116, "con_iva": True}]))
+    mov = {"id": "m1", "caja_id": "c1", "caja": {"nombre": "DAVID"}}
+    filas = propago.filas_registro(mov, renglones)
+    assert filas and set().union(*filas) <= _columnas("registros_erp")
+
+
 def test_reglas_iniciales_salen_con_las_mismas_columnas():
     # PostgREST rechaza un lote cuyas filas tienen llaves distintas: así falló la primera carga.
     from app.api import propago
